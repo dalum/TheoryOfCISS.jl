@@ -1,0 +1,7 @@
+name = "TheoryOfCISS"
+uuid = "5d4873e0-b278-11e8-22ba-6bbd77655b60"
+authors = ["Sakse Dalum <dalum@users.noreply.github.com>"]
+version = "0.1.0"
+
+[deps]
+Molecules = "b1a1a29a-b0d4-11e8-1cd2-f9da3df6e8e0"
