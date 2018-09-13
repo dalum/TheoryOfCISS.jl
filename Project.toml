@@ -4,4 +4,11 @@ authors = ["Sakse Dalum <dalum@users.noreply.github.com>"]
 version = "0.1.0"
 
 [deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Molecules = "b1a1a29a-b0d4-11e8-1cd2-f9da3df6e8e0"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
+RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
