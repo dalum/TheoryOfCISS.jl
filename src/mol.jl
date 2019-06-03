@@ -4,7 +4,7 @@
 """
     makemol(N, ϕ, l)
 """
-@export function makemol(N, ϕ=π/4, l=1.4; handedness=1, vec=vec, δz=nothing, θ=nothing, r0=nothing)
+@export function makemol(N, ϕ=π/4, l=1.4; handedness=1, δz=nothing, θ=nothing, r0=nothing)
     if δz !== nothing && θ !== nothing
         r0 = [l, 0, 0]
     end
@@ -24,7 +24,7 @@
     mol = Molecule()
 
     axes = makeaxes(π/2, ϕ*handedness)
-    A′ = Hydrogen(vec(2N + 2, 1, r0...), orbital"1s", axes=axes)
+    A′ = Hydrogen(vec(r0...), orbital"1s", axes=axes)
     push!(mol, A′)
     for i in 1:N
         rotation_matrix = LinearAlgebra.Givens(1, 2, cos(i*θ), -sin(i*θ))
@@ -32,8 +32,8 @@
         axes = makeaxes(π/2 + i*θ, ϕ*handedness)
         r1 = shift_vector + rotation_matrix*r0
         r2 = shift_vector + rotation_matrix*(r0 + [abs(l), 0, 0])
-        A = Carbon(vec(2N + 2, 2i, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        B = Hydrogen(vec(2N + 2, 2i + 1, r2...), orbital"1s", axes=axes)
+        A = Carbon(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        B = Hydrogen(vec(r2...), orbital"1s", axes=axes)
         push!(mol, A, B)
         push!(mol, Bond(A, A′), Bond(A, B))
         A′ = A
@@ -42,13 +42,13 @@
     shift_vector = [0, 0, (N+1)*δz]
     axes = makeaxes(π/2 + (N+1)*θ, ϕ*handedness)
     r1 = shift_vector + rotation_matrix*r0
-    A = Hydrogen(vec(2N + 2, 2N + 2, r1...), orbital"1s", axes=axes)
+    A = Hydrogen(vec(r1...), orbital"1s", axes=axes)
     push!(mol, A)
     push!(mol, Bond(A, A′))
     return mol
 end
 
-function makehelicene(N, ϕ=π/4, l=1.4; handedness=1, vec=vec)
+function makehelicene(N, ϕ=π/4, l=1.4; handedness=1)
     δz = √3 * l * sin(ϕ) / 2
     shift_vector = [0, 0, δz]
     θ = 2π/6#π - 2atan(√3 * cos(ϕ))*handedness
@@ -69,8 +69,8 @@ function makehelicene(N, ϕ=π/4, l=1.4; handedness=1, vec=vec)
     i = 0
     r1 = (i + 3ϕ1/π)*shift_vector + rotation_matrix1*r0
     r4 = (i + 3ϕ4/π)*shift_vector + rotation_matrix4*([abs(l)*√(5 + √3), 0, 0])
-    A′ = Hydrogen(vec(2N + 2, 1, r1...), orbital"1s", axes=axes)
-    D′ = Hydrogen(vec(2N + 2, 1, r4...), orbital"1s", axes=axes)
+    A′ = Hydrogen(vec(r1...), orbital"1s", axes=axes)
+    D′ = Hydrogen(vec(r4...), orbital"1s", axes=axes)
     push!(mol, A′)
     push!(mol, D′)
     for i in 1:N
@@ -89,12 +89,12 @@ function makehelicene(N, ϕ=π/4, l=1.4; handedness=1, vec=vec)
         r5 = (i + 3ϕ5/π)*shift_vector + rotation_matrix5*([abs(l)*√13, 0, 0])
         r6 = (i + 3ϕ6/π)*shift_vector + rotation_matrix6*([abs(l)*√13, 0, 0])
 
-        A = Carbon(vec(2N + 2, 2i, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        B = Carbon(vec(2N + 2, 2i, r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        C = Carbon(vec(2N + 2, 2i, r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        D = Carbon(vec(2N + 2, 2i, r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        E = Hydrogen(vec(2N + 2, 1, r5...), orbital"1s", axes=axes)
-        F = Hydrogen(vec(2N + 2, 1, r6...), orbital"1s", axes=axes)
+        A = Carbon(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        B = Carbon(vec(r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        C = Carbon(vec(r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        D = Carbon(vec(r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        E = Hydrogen(vec(r5...), orbital"1s", axes=axes)
+        F = Hydrogen(vec(r6...), orbital"1s", axes=axes)
         push!(mol, A, B, C, D, E, F)
         push!(mol, Bond(A, A′), Bond(A, B), Bond(B, C), Bond(C, D), Bond(B, D′), Bond(C, E), Bond(D, F))
         A′ = A
@@ -112,16 +112,16 @@ function makehelicene(N, ϕ=π/4, l=1.4; handedness=1, vec=vec)
     r3 = (i + 3ϕ3/π)*shift_vector + rotation_matrix3*([abs(l)*√7, 0, 0])
     r4 = ((i+1) + 3ϕ1/π)*shift_vector + rotation_matrix4*r0
 
-    A = Carbon(vec(2N + 2, 2i, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    B = Carbon(vec(2N + 2, 2i, r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    C = Hydrogen(vec(2N + 2, 2i + 1, r3...), orbital"1s", axes=axes)
-    D = Hydrogen(vec(2N + 2, 2i + 1, r4...), orbital"1s", axes=axes)
+    A = Carbon(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    B = Carbon(vec(r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    C = Hydrogen(vec(r3...), orbital"1s", axes=axes)
+    D = Hydrogen(vec(r4...), orbital"1s", axes=axes)
     push!(mol, A, B, C, D)
     push!(mol, Bond(A, A′), Bond(A, B), Bond(B, C), Bond(B, D′), Bond(A, D))
     return mol
 end
 
-function makehelicene2(N, a=0.5, l=1.4; handedness=1, vec=vec)
+function makehelicene2(N, a=0.5, l=1.4; handedness=1)
     shift_vector = [0, 0, a]
     θ = 2π/6#π - 2atan(√3 * cos(ϕ))*handedness
     ϕ1 = 0
@@ -143,9 +143,9 @@ function makehelicene2(N, a=0.5, l=1.4; handedness=1, vec=vec)
     r1 = (i + 3ϕ1/π)*shift_vector + rotation_matrix1*r0
     r4 = (i + 3ϕ4/π)*shift_vector + rotation_matrix4*(√(5 + √3)*r0)
     r5 = ((i-1) + 3ϕ1/π)*shift_vector + rotation_matrix5*r0
-    A′ = Oxygen(vec(2N + 2, 1, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    D′ = Hydrogen(vec(2N + 2, 1, r4...), orbital"1s", axes=axes)
-    F′ = Hydrogen(vec(2N + 2, 1, r5...), orbital"1s", axes=axes)
+    A′ = Oxygen(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    D′ = Hydrogen(vec(r4...), orbital"1s", axes=axes)
+    F′ = Hydrogen(vec(r5...), orbital"1s", axes=axes)
     push!(mol, A′, D′, F′)
     push!(mol, Bond(A′, F′))
 
@@ -165,22 +165,22 @@ function makehelicene2(N, a=0.5, l=1.4; handedness=1, vec=vec)
         r5 = (i + 3ϕ5/π)*shift_vector + rotation_matrix5*(√13*r0)
         r6 = (i + 3ϕ6/π)*shift_vector + rotation_matrix6*(√13*r0)
 
-        A = Carbon(vec(2N + 2, 2i, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-        B = Carbon(vec(2N + 2, 2i, r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        A = Carbon(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+        B = Carbon(vec(r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
         if i == 2
-            C = Nitrogen(vec(2N + 2, 2i, r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-            F = Carbon(vec(2N + 2, 1, r6...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            C = Nitrogen(vec(r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            F = Carbon(vec(r6...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
         else
-            C = Carbon(vec(2N + 2, 2i, r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-            F = Hydrogen(vec(2N + 2, 1, r6...), orbital"1s", axes=axes)
+            C = Carbon(vec(r3...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            F = Hydrogen(vec(r6...), orbital"1s", axes=axes)
         end
 
         if i == 3
-            D = Nitrogen(vec(2N + 2, 2i, r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-            E = Carbon(vec(2N + 2, 1, r5...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            D = Nitrogen(vec(r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            E = Carbon(vec(r5...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
         else
-            D = Carbon(vec(2N + 2, 2i, r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-            E = Hydrogen(vec(2N + 2, 1, r5...), orbital"1s", axes=axes)
+            D = Carbon(vec(r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            E = Hydrogen(vec(r5...), orbital"1s", axes=axes)
         end
 
         push!(mol, A, B, C, D, E, F)
@@ -196,11 +196,11 @@ function makehelicene2(N, a=0.5, l=1.4; handedness=1, vec=vec)
             r9 = (i + 3ϕ9/π)*shift_vector + rotation_matrix9*(√19*r0)
             r10 = (i + 3ϕ10/π)*shift_vector + rotation_matrix10*(√19*r0)
 
-            G = Carbon(vec(2N + 2, 1, r7...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-            H = Hydrogen(vec(2N + 2, 1, r8...), orbital"1s", axes=axes)
+            G = Carbon(vec(r7...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+            H = Hydrogen(vec(r8...), orbital"1s", axes=axes)
 
-            I = Hydrogen(vec(2N + 2, 1, r9...), orbital"1s", axes=axes)
-            J = Hydrogen(vec(2N + 2, 1, r10...), orbital"1s", axes=axes)
+            I = Hydrogen(vec(r9...), orbital"1s", axes=axes)
+            J = Hydrogen(vec(r10...), orbital"1s", axes=axes)
             push!(mol, G, H, I, J)
             push!(mol, Bond(E, G), Bond(F′, G), Bond(G, H), Bond(E, I), Bond(F′, J))
         end
@@ -224,11 +224,11 @@ function makehelicene2(N, a=0.5, l=1.4; handedness=1, vec=vec)
     r4 = ((i+1) + 3ϕ1/π)*shift_vector + rotation_matrix4*r0
     r5 = ((i+2) + 3ϕ1/π)*shift_vector + rotation_matrix5*r0
 
-    A = Carbon(vec(2N + 2, 2i, r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    B = Carbon(vec(2N + 2, 2i, r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    C = Hydrogen(vec(2N + 2, 2i + 1, r3...), orbital"1s", axes=axes)
-    D = Oxygen(vec(2N + 2, 1, r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
-    E = Hydrogen(vec(2N + 2, 1, r5...), orbital"1s", axes=axes)
+    A = Carbon(vec(r1...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    B = Carbon(vec(r2...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    C = Hydrogen(vec(r3...), orbital"1s", axes=axes)
+    D = Oxygen(vec(r4...), orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z", axes=axes)
+    E = Hydrogen(vec(r5...), orbital"1s", axes=axes)
     push!(mol, A, B, C, D, E)
     push!(mol, Bond(A, A′), Bond(A, B), Bond(B, C), Bond(B, D′), Bond(A, D), Bond(D, E))
     return mol

@@ -1,3 +1,5 @@
+using Molecules: σ
+
 function eigensort(H; by=identity)
     vals, vecs = eigen(H)
     s = sortperm(vals, by=by)
@@ -6,9 +8,6 @@ end
 
 #const GLOBAL_SKT = loaddir(joinpath(PARAMDIR, "ob2-1-1", "base"))
 const GLOBAL_SKT = loaddir(joinpath(PARAMDIR, "mio-1-1"))
-
-using Molecules: σ
-@export const ⊗ = kron
 
 struct LiteSimulation <: Simulation
     N::Integer
@@ -119,7 +118,7 @@ end
     return vecs*vecs'
 end
 
-@export function fullhamiltonian(sim::Simulation; λ=4e-3)
+@export function fullhamiltonian(sim::Simulation; λ=8e-3)
     H = complex(sim.H0 ⊗ σ[0])
     H += -im * sim.ΓR ⊗ σ[0]
     H += sum(λ * L ⊗ Molecules.σ[x] for (L, x) in zip((sim.Lx, sim.Ly, sim.Lz), (:x, :y, :z)))
@@ -153,8 +152,8 @@ end
 @export function polarization(G, γL, ΓR, Λ)
     X, Y = G*γL, G'ΓR
     t = real(dot(X', Y))
-    s = 2*real(dot(X', Y*G*Λ))
-    return s / t, t, s
+    s = dot(X', Y*G*Λ)
+    return s / t, t, 2real(s)
 end
 
 @export function nearest_eigenstates(eig::Eigen, E)

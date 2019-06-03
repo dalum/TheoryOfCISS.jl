@@ -1,5 +1,3 @@
-using RecipesBase
-
 mutable struct DataSlice
     metadata
     y0
@@ -40,9 +38,7 @@ function Base.Vector{DataColumn}(xsymbol, xs::AbstractVector)
 end
 
 Base.setindex!(col::DataColumn, value, ys...) = setindex!(col.data, map(indexsnap, ys))
-
 Base.copy(col::DataColumn) = DataColumn(col.metadata, col.ys, copy(col.data), col.touched)
-
 Base.show(io::IO, col::DataColumn) = print(io, "DataColumn(...)")
 
 function indexsnap(xs, x0)
@@ -217,17 +213,36 @@ end
 function calc_data1(sim::Simulation, y)
     G = propagator(sim, y)
     eigvals, U = nearest_eigenstates(sim.eig, y)
-    _, t, s = polarization(G, sim.γL, sim.ΓR, sim.Lz)
+    v, t, s = polarization(G, sim.γL, sim.ΓR, sim.Lz)
 
     return (
+        v = v,
         t = t,
         s = s,
         eigvals = eigvals,
         G = U'G*U,
-        L = U'sim.Lz*U,
+        Lx = U'sim.Lx*U,
+        Ly = U'sim.Ly*U,
+        Lz = U'sim.Lz*U,
         γL = U'sim.γL*U,
         ΓL = U'sim.ΓL*U,
         ΓR = U'sim.ΓR*U
+    )
+end
+
+function calc_data2(sim::Simulation, y)
+    G = propagator(sim, y)
+    eigvals, U = nearest_eigenstates(sim.eig, y)
+    vx, t, _ = polarization(G, sim.γL, sim.ΓR, sim.Lx)
+    vy, _, _ = polarization(G, sim.γL, sim.ΓR, sim.Ly)
+    vz, _, _ = polarization(G, sim.γL, sim.ΓR, sim.Lz)
+
+    return (
+        vx = vx,
+        vy = vy,
+        vz = vz,
+        t = t,
+        eigvals = eigvals,
     )
 end
 
@@ -273,11 +288,20 @@ box(x, x0, σ) = abs(x - x0) < σ ? 1.0 : 0.0
 
 @export percentage(x) = 100x
 
-@export transmission(x::NamedTuple; λ=4e-3) = get(x, :t, 0.0)
-@export spintransmission(x::NamedTuple; λ=4e-3) = λ*get(x, :s, 0.0)
-@export polarization(x::NamedTuple; λ=4e-3) = get(x, :p, λ*get(x, :s, 0.0) / get(x, :t, 1e-16))
+@export transmission(x::NamedTuple; λ=8e-3) = get(x, :t, 0.0)
+@export spintransmission(x::NamedTuple; λ=8e-3) = λ*get(x, :s, 0.0)
+@export polarization(x::NamedTuple; λ=8e-3) = λ*get(x, :s, 0.0) / get(x, :t, 1e-16)
 
-function transmission_twoband(x::NamedTuple; λ=4e-3)
+@export Cvec(x::NamedTuple; λ=8e-3, v = :vz) = λ*2imag(get(x, v, 0.0))# * get(x, :t, 1e-16)
+@export Cveclen(x::NamedTuple; λ=8e-3) = sqrt(sum(Cvec(x, v = v)^2 for v in (:vx, :vy, :vz)))
+@export Cvecproj(x::NamedTuple; λ=8e-3, v = :vz) = abs(Cvec(x, v = v)) / Cveclen(x)
+
+@export Dvec(x::NamedTuple; λ=8e-3, v = :vz) = λ*2real(get(x, v, 0.0))# * get(x, :t, 1e-16)
+@export Dveclen(x::NamedTuple; λ=8e-3) = sqrt(sum(Dvec(x, v = v)^2 for v in (:vx, :vy, :vz)))
+@export Dvecproj(x::NamedTuple; λ=8e-3, v = :vz) = abs(Dvec(x, v = v)) / Dveclen(x)
+
+
+function transmission_twoband(x::NamedTuple; λ=8e-3)
     G = get(x, :G, fill(0.0, 2, 2))
     iszero(G) && return 0.0
     γL = get(x, :γL, fill(0.0, 2, 2))
@@ -285,7 +309,7 @@ function transmission_twoband(x::NamedTuple; λ=4e-3)
     return real(dot(γL, G'ΓR*G))
 end
 
-function spintransmission_twoband(x::NamedTuple; λ=4e-3)
+function spintransmission_twoband(x::NamedTuple; λ=8e-3)
     G = get(x, :G, fill(0.0, 2, 2))
     iszero(G) && return 0.0
     Λ = λ*get(x, :L, fill(0.0, 2, 2))
@@ -294,7 +318,7 @@ function spintransmission_twoband(x::NamedTuple; λ=4e-3)
     return 2*real(dot(γL, G'ΓR*G*Λ*G))
 end
 
-function polarization_twoband(x::NamedTuple; λ=4e-3)
+function polarization_twoband(x::NamedTuple; λ=8e-3)
     G = get(x, :G, fill(0.0, 2, 2))
     iszero(G) && return 0.0
     Λ = λ*get(x, :L, fill(0.0, 2, 2))
@@ -349,13 +373,13 @@ function smoothen(
     return slice
 end
 
-Λ12(x::NamedTuple; λ=4e-3) = 2*imag(λ*get(x, :L, fill(0.0, 2, 2))[1,2])
-function prefactor(x::NamedTuple; λ=4e-3)
+Λ12(x::NamedTuple; λ=8e-3) = 2*imag(λ*get(x, :L, fill(0.0, 2, 2))[1,2])
+function prefactor(x::NamedTuple; λ=8e-3, L = :Lz)
     G = get(x, :G, fill(0.0, 2, 2))
     iszero(G) && return 0.0, 0.0, 1e-16
     A = -im .* (G .- G') ./ 2
 
-    Λ = λ*get(x, :L, fill(0.0, 2, 2))
+    Λ = λ*get(x, L, fill(0.0, 2, 2))
     γL = get(x, :γL, fill(0.0, 2, 2))
     ΓL = get(x, :ΓL, fill(0.0, 2, 2))
     ΓR = get(x, :ΓR, fill(0.0, 2, 2))
@@ -382,82 +406,4 @@ end
 function yslice(cols::Vector{DataColumn}, y0)
     idx = indexsnap(cols[1].ys, y0)
     return [DataSlice(col.metadata, y0, col.data[idx]) for col in cols]
-end
-
-@recipe function f(g::Function, cols::Vector{DataColumn}; xtransform=identity, ztransform=identity, contrast=8)
-    xs, ys, zs = datamap(g, cols)
-    xlabel --> get(cols[1].metadata, :xsymbol, nothing)
-    xs = xtransform.(xs)
-    zs = ztransform.(zs)
-
-    xlims --> (xs[1], xs[end])
-    ylims --> (ys[1], ys[end])
-
-    clim = max(contrast*std(zs), maximum(abs.(zs))/contrast)
-    if all(x -> x >= 0, zs)
-        clims --> (0.0, clim)
-        color --> :ice_r
-    else
-        clims --> (-clim, clim)
-        color --> :pu_or
-    end
-
-    @series begin
-        linewidth --> 1
-        linecolor --> :black
-        seriesalpha --> 0.3
-        seriestype := :path
-        primary := false
-        markershape := :none
-
-        (xs, mapreduce(col -> col.metadata.sim.eig.values, hcat, cols)')
-    end
-
-    (xs, ys, zs)
-end
-
-@recipe function f(cols::Vector{DataColumn}; xtransform=identity, markerfunction=x->:black)
-    xs, ys = ranges(cols)
-    xlabel --> get(cols[1].metadata, :xsymbol, nothing)
-    xs = xtransform.(xs)
-    eigvalues = mapreduce(col -> col.metadata.sim.eig.values, hcat, cols)'
-    xlims --> (xs[1], xs[end])
-    if length(ys) >= 2
-        ylims --> (ys[1], ys[end])
-    end
-    yticks --> range(floor(Int, minimum(eigvalues)), ceil(Int, maximum(eigvalues)), step=1)
-
-    linewidth --> 1
-    linecolor --> :black
-    #seriesalpha --> 0.3
-    legend --> false
-    markercolor --> mapreduce(col -> map(markerfunction, col.data), hcat, cols)
-    # seriestype := :path
-    # markershape := :none
-
-    @series begin
-        μs = mapreduce(col -> col.metadata.sim.μ, vcat, cols)
-        linewidth --> 1
-        linecolor := :red
-        linestyle --> :dash
-        (xs, μs)
-    end
-
-    (xs, mapreduce(col -> col.metadata.sim.eig.values, hcat, cols)')
-end
-
-@recipe function f(g::Function, slices::Vector{DataSlice}; xtransform=identity)
-    xs, ys = datamap(g, slices)
-    xs = xtransform.(xs)
-    xlims --> (xs[1], xs[end])
-    ylim = maximum(abs.(ys))
-    if all(y -> y >= 0, ys)
-        ylims --> (0.0, ylim)
-    else
-        ylims --> (-ylim, ylim)
-    end
-
-    #linewidth --> 1
-
-    (xs, ys)
 end
