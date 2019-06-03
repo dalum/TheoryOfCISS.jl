@@ -1,7 +1,7 @@
 # TheoryOfCISS
 
 Code repository accompanying the paper: *Theory of Chiral Induced Spin
-Selectivity*.
+Selectivity* by Sakse Dalum and Per Hedegård.
 
 # Installation
 
