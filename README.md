@@ -1,4 +1,4 @@
-# TheoryOfCISS 🧚🏻
+# TheoryOfCISS
 
 Code repository accompanying the paper: "Theory of Chiral Induced Spin
 Selectivity".
