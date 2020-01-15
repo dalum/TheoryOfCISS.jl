@@ -1,76 +1,111 @@
-using Molecules: σ
-
 function eigensort(H; by=identity)
     vals, vecs = eigen(H)
     s = sortperm(vals, by=by)
     return Eigen(vals[s], vecs[:, s])
 end
 
-#const GLOBAL_SKT = loaddir(joinpath(PARAMDIR, "ob2-1-1", "base"))
-const GLOBAL_SKT = loaddir(joinpath(PARAMDIR, "mio-1-1"))
-
 struct LiteSimulation <: Simulation
-    N::Integer
+    constructor::AbstractMoleculeConstructor
     mol::Molecule
     eig
     μ
     Δ
+    H
     H0
+    S0
     γL
     ΓL
     ΓR
-    Lx
-    Ly
-    Lz
+    L
 end
-Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation($(sim.N))")
+Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
 
 @export function LiteSimulation(
-    N::Integer;
-    η = 1e-15,
-    ϕ = π/4,
-    l = 1.4,
-    handedness = 1,
-    α = 1.0,
+    m;
     V = 0.0,
-    θ = nothing,
-    δz = nothing,
     fixed_distance = nothing,
-    ρ0 = Diagonal([0.0, 1.0, 0.0]),
-    ρL = Matrix(1.0I, 6, 6),
-    ρR = Matrix(1.0I, 6, 6),
-    rng = MersenneTwister(47)
-)
-    mol = makemol(N, ϕ, l, handedness=handedness, θ=θ, δz=δz)
-    hydrogen_atoms = collect(filter(x -> x isa Hydrogen, mol.atoms))
-    carbon_atoms = collect(filter(x -> x isa Carbon, mol.atoms))
-    z1, z2 = extrema(map(x->Molecules.position(x)[3], mol.atoms))
-    z0 = (z1 + z2)/2
-    d = (z2 - z1)/2
-    electric_field = (x, y, z) -> iszero(d) ? 0.0 : -V*(z - z0)/d
+    correct_overlaps = true,
+    align_molecule = false,
+    xyz_file = nothing,
 
-    H0 = hamiltonian(Float64, GLOBAL_SKT, mol, fixed_distance=fixed_distance, electric_field=electric_field)
-    eig = eigensort(H0, by=real) # eigen(H0, sortby=real)
+    ρ0 = Diagonal([0.0, 0.0, 1.0, 0.0]),
+    ρL = 1.0I,
+    ρR = 1.0I,
+    seed = 47,
+    rng = MersenneTwister(seed),
+
+    kwargs...
+)
+    mol = m(; kwargs...)
+    xyz_file != nothing && Molecules.read_xyz!(mol, xyz_file)
+    align_molecule && Molecules.balance_position!(GLOBAL_SKT, mol)
+
+    z1, z2 = extrema(map(x -> Molecules.position(x)[3], mol.atoms))
+    z0 = (z1 + z2) / 2
+    d = (z2 - z1) / 2
+    electric_field = (x, y, z) -> iszero(d) ? 0.0 : -V * (z - z0) / d
+
+    H0 = Hermitian(hamiltonian(Float64, GLOBAL_SKT, mol, fixed_distance=fixed_distance, electric_field=electric_field))
+    if correct_overlaps
+        S0 = Hermitian(overlap(Float64, GLOBAL_SKT, mol, fixed_distance=fixed_distance))
+        Ssqrtinv = sqrt(inv(S0))
+        H = Ssqrtinv*H0*Ssqrtinv
+    else
+        S0 = I
+        H = H0
+    end
+    eig = eigen(H, sortby=real)
     μ, Δ = chemicalpotential(mol, eig.values)
 
-    γL = sparse(α*makecoupling(rng, ρ0, H0, Molecules.indices(mol, carbon_atoms[1])))
-    ΓL = sparse(α*makecoupling(rng, ρL, H0, Molecules.indices(mol, carbon_atoms[1])))
-    ΓR = sparse(α*makecoupling(rng, ρR, H0, Molecules.indices(mol, carbon_atoms[end])))
-    Lx = sparse(angularmomentum(:x, mol))
-    Ly = sparse(angularmomentum(:y, mol))
-    Lz = sparse(angularmomentum(:z, mol))
+    left_atom, right_atom = mol.atoms[m.left_index], mol.atoms[end-m.right_index+1]
 
-    return LiteSimulation(N, mol, eig, μ, Δ, H0, γL, ΓL, ΓR, Lx, Ly, Lz)
+    γL = makecoupling(rng, ρ0, H0, Molecules.indices(mol, left_atom))
+    ΓL = makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
+    ΓR = makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
+
+    L = map(x -> angularmomentum(x, mol), [:x, :y, :z])
+
+    return LiteSimulation(m, mol, eig, μ, Δ, H, H0, S0, γL, ΓL, ΓR, L)
+end
+
+makecoupling(rng, ρ::UniformScaling, A, indices) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices)
+makecoupling(rng::UniformScaling, ρ::UniformScaling, A, indices) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices)
+
+function makecoupling(rng::UniformScaling, ρ, A, indices)
+    U = spzeros(Float64, size(ρ, 2), size(A, 1))
+    U[:, indices] = Matrix(rng, size(ρ, 2), length(indices))
+    B = U'ρ*U
+    rmul!(B, rank(B)*inv(tr(B)))
+    !isposdef!(B + 1e-16I) && error("Invalid coupling!")
+    return B
 end
 
 function makecoupling(rng, ρ, A, indices)
-    U = fill(0.0, size(ρ, 2), size(A, 1))
+    U = spzeros(Float64, size(ρ, 2), size(A, 1))
     U[:, indices] = randn(rng, size(ρ, 2), length(indices))
     B = U'ρ*U
-    return rmul!(B, inv(norm(B)))
+    rmul!(B, rank(B)*inv(tr(B)))
+    !isposdef!(B + 1e-16I) && error("Invalid coupling!")
+    return B
 end
 
-@export propagator(sim::Simulation, E) = inv(E*I - sim.H0 + im*(sim.ΓL + sim.ΓR)/2)
+@export function fullpropagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ)
+    return inv(
+        (E*I - sim.H + α * λ * im * (sim.ΓL + sim.ΓR) / 2) ⊗ σ0 -
+        λ * sum(L ⊗ σ for (L, σ) in zip(sim.L, σ))
+    )
+end
+
+@export function propagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ,
+                            ΓL=sim.ΓL, ΓR=sim.ΓR, H=sim.H)
+    return inv(E*I - H + α*λ*im/2*(ΓL + ΓR))
+end
+
+@export function reduced_propagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ,
+                                    ΓL=sim.ΓL, ΓR=sim.ΓR, H=sim.H, L=sim.L, a=[0, 0, 0], η=0.0)
+    return inv(E*I - H - sum(a[i]*L[i] for i in 1:3) + α*λ*im/2*(ΓL + ΓR) + im*η*I)
+end
+
 @export commutator(A, B) = A*B - B*A
 @export timeevolution(H, dt) = exp(-im*H*dt)
 @export timeevolution_1(H, dt) = I - im*H*dt# - H*H*dt^2/2
@@ -118,11 +153,11 @@ end
     return vecs*vecs'
 end
 
-@export function fullhamiltonian(sim::Simulation; λ=8e-3)
-    H = complex(sim.H0 ⊗ σ[0])
-    H += -im * sim.ΓR ⊗ σ[0]
-    H += sum(λ * L ⊗ Molecules.σ[x] for (L, x) in zip((sim.Lx, sim.Ly, sim.Lz), (:x, :y, :z)))
-    return H
+@export function fullhamiltonian(sim::Simulation; λ=DEFAULT_λ)
+    H = complex(sim.H ⊗ σ0)
+    #H += -im * sim.ΓR ⊗ σ0
+    H += sum(λ * Li ⊗ σi for (Li, σi) in zip(sim.L, σ))
+    return (H .+ H') ./ 2
 end
 
 @export function adiabatic_polarization(sim::Simulation)
@@ -146,29 +181,53 @@ end
     return real.(reduce(hcat, b)*dt)
 
     p = Diagonal(exp.(-im .* sim1.eig.values .* dt) ./ diag(a2'a1) ./ dt)
-    return (a1'a2*p - I/dt)
+    return (a1'a2*p - I / dt)
 end
 
-@export function polarization(G, γL, ΓR, Λ)
-    X, Y = G*γL, G'ΓR
-    t = real(dot(X', Y))
-    s = dot(X', Y*G*Λ)
-    return s / t, t, 2real(s)
+function calculate_s_and_t(G, γL, ΓR, Ls)
+    X = G*γL*G'
+    t = 2real(dot(X, ΓR))
+    s = map(L -> 4dot(X, ΓR*G*L), Ls)
+    return s, t
 end
 
-@export function nearest_eigenstates(eig::Eigen, E)
+@export function nearest_eigenstates(eig::Eigen, E; n=2, N=length(eig.values), nmin=1)
     vals = collect(enumerate(abs.(inv.(eig.values .- E))))
-    sort!(vals, by=x->x[2])
-    eigvals = eig.values[vals[end][1]], eig.values[vals[end-1][1]]
-    U = [eig.vectors[:,vals[end][1]] eig.vectors[:,vals[end-1][1]]]
-    return eigvals, U
+    sort!(vals, by=x->x[2], rev=true)
+    indices = map(val -> val[1], vals)
+    eigvals = eig.values[indices[nmin:(nmin+n-1)]]
+    U = reduce(hcat, (eig.vectors[:, indices[i]] for i in nmin:(nmin+n-1)))
+    V = reduce(hcat, (eig.vectors[:, indices[i]] for i in (nmin+n):N))
+    return eigvals, U, V
 end
 
 @export function extract_slater_koster_params(l)
-    CCmol = Molecule()
+    mol = Molecule()
     A = Carbon([0.0, 0.0, 0.0], orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z")
     B = Carbon([0.0, 0.0, 1.0*l], orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z")
-    push!(CCmol, A, B)
-    push!(CCmol, Bond(A, B))
-    hamiltonian(Float64, GLOBAL_SKT, CCmol)
+    C = Hydrogen([0.0, 0.0, 0.0], orbital"1s")
+    D = Hydrogen([0.0, 0.0, 1.0*l], orbital"1s")
+    push!(mol, A, B, C, D)
+    push!(mol, Bond(A, B))
+    push!(mol, Bond(B, C))
+    push!(mol, Bond(C, D))
+    push!(mol, Bond(D, A))
+    H = hamiltonian(Float64, GLOBAL_SKT, mol)
+    println("H-H")
+    println("E_s = $(H[9,9])")
+    println("V_ssσ = $(H[9,10])")
+
+    println("C-C")
+    println("E_s = $(H[1,1])")
+    println("E_p = $(H[2,2])")
+    println("V_ssσ = $(H[1,5])")
+    println("V_spσ = $(H[1,8])")
+    println("V_psσ = $(H[4,5]) ($(H[4,5] == -H[1,8] ? "" : "in")consistent)")
+    println("V_ppσ = $(H[4,8])")
+    println("V_ppπ = $(H[2,6])")
+
+    println("H-C")
+    println("V_ssσ = $(H[5,9])")
+    println("V_spσ = $(H[9,8])")
+    println("V_psσ = $(H[4,10]) ($(H[4,10] == -H[8,9] ? "" : "in")consistent)")
 end

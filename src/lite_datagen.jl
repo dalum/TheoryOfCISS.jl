@@ -8,14 +8,17 @@ Base.show(io::IO, col::DataSlice) = print(io, "DataSlice(...)")
 mutable struct DataColumn
     metadata
     ys
+    ysymbol
     data
     touched
 end
 DataColumn(metadata) = DataColumn(Float64[], metadata)
-DataColumn(ys, metadata) = DataColumn(metadata, collect(ys), fill!(Vector(undef, length(ys)), NamedTuple()), fill(false, length(ys)))
+DataColumn(ys, metadata) = DataColumn(ys, nothing, metadata)
+DataColumn(ys, ysymbol, metadata) = DataColumn(metadata, collect(ys), ysymbol, fill!(Vector(undef, length(ys)), NamedTuple()), fill(false, length(ys)))
 
-function initialize!(col::DataColumn, ys)
+function initialize!(col::DataColumn, ys, ysymbol)
     col.ys = ys
+    col.ysymbol = ysymbol
     col.data = fill!(Vector(undef, length(ys)), NamedTuple())
     col.touched = fill(false, length(ys))
     return col
@@ -38,36 +41,97 @@ function Base.Vector{DataColumn}(xsymbol, xs::AbstractVector)
 end
 
 Base.setindex!(col::DataColumn, value, ys...) = setindex!(col.data, map(indexsnap, ys))
-Base.copy(col::DataColumn) = DataColumn(col.metadata, col.ys, copy(col.data), col.touched)
+Base.copy(col::DataColumn) = DataColumn(col.metadata, col.ys, col.ysymbol, copy(col.data), col.touched)
 Base.show(io::IO, col::DataColumn) = print(io, "DataColumn(...)")
 
 function indexsnap(xs, x0)
     x1, x2 = x0 .- inv.(extrema(inv.(x0 .- xs)))
-    y0 = abs(y2 - y0) > abs(x1 - x0) ? x1 : x2
+    x0 = abs(x2 - x0) > abs(x1 - x0) ? x1 : x2
     return findfirst(x -> x == x0, xs)
 end
 
+function Base.map(f, cols::Vector{DataColumn})
+    return mapreduce(a -> map(f, a.data), hcat, cols)
+end
+
+@export function datamap(f, cols::Vector{DataColumn})
+    ys = mapreduce(a -> collect(a.ys), hcat, cols)
+    xs = mapreduce(a -> a.metadata.x, vcat, cols)
+    xs = [x for _ in 1:size(ys, 1), x in xs]
+    zs = mapreduce(a -> map(f, a.data), hcat, cols)
+    return xs, ys, zs
+end
+
+function datamap(f, slices::Vector{DataSlice})
+    xs = mapreduce(a -> a.metadata.x, vcat, slices)
+    ys = mapreduce(a -> f(a.data), vcat, slices)
+    return xs, ys
+end
+
+function energy_bands(cols::Vector{DataColumn})
+    eigvalues = mapreduce(col -> col.metadata.sim.eig.values, hcat, cols)'
+    energy_range = range(floor(Int, minimum(eigvalues)), ceil(Int, maximum(eigvalues)), step=1)
+    return eigvalues, energy_range
+end
+
+function energy_bounds(cols)
+    gmin, gmax = 0.0, 0.0
+    for col in cols
+        gmin = min(gmin, floor(Int, minimum(col.metadata.sim.eig.values)))
+        gmax = max(gmax, ceil(Int, maximum(col.metadata.sim.eig.values)))
+    end
+    return gmin, gmax
+end
+
+function ranges(cols::Vector{DataColumn})
+    xs = mapreduce(a -> a.metadata.x, vcat, cols)
+    ys = collect(cols[1].ys)
+    return xs, ys
+end
+
+function Base.range(slices::Vector{DataSlice})
+    return mapreduce(a -> a.metadata.x, vcat, slices)
+end
+
+function atpoint(
+    f,
+    x,
+    y,
+    args...;
+    xsymbol,
+    ysymbol,
+    calc = calc_data1,
+    v = Dict(),
+    kwargs...
+)
+    sim = LiteSimulation(args...; (xsymbol => x,)..., kwargs...)
+    return f(calc(sim; v..., (ysymbol => y,)...))
+end
+
+gaussian(x, x0, σ) = exp(-(x - x0)^2 / (2σ^2))
+box(x, x0, σ) = abs(x - x0) < σ ? 1.0 : 0.0
+
 function find_crossing(
     x0,
-    y,
-    N = 14;
-    l = DEFAULT_LENGTH,
-    α = 1.0,
+    y0,
+    args...;
+    xsymbol,
     threshold = 1e-12,
     max_iterations = 1e1,
     δx = 1e-6,
-    attenuation = 1e-2
+    attenuation = 1e-2,
+    kwargs...
 )
     function optim(x, y)
-        sim = LiteSimulation(N, ϕ=x, l=l, α=α)
-        eigvals, _ = nearest_eigenstates(sim.eig, y)
+        sim = LiteSimulation(args...; kwargs..., (xsymbol => x,)...)
+        eigvals, _ = nearest_eigenstates(sim.eig, y, n=2)
         d = abs(eigvals[1] - eigvals[2])
         y = (eigvals[1] + eigvals[2])/2
         return d, y
     end
 
     x = x0
-    _, y = optim(x, y)
+    _, y = optim(x, y0)
     for _ in 1:max_iterations
         (d, y), (d_, _) = optim(x, y), optim(x + δx, y)
         δd = d_ - d
@@ -78,15 +142,14 @@ function find_crossing(
 end
 
 @export function track_crossing_length(
-    points;
+    points,
+    args...;
     N0,
     pinned = true,
     N_lower = 2,
     N_upper = 52,
     N_step = 2,
     threshold = 0.001,
-    α = 1.0,
-    l = DEFAULT_LENGTH,
     f = prefactor,
     kwargs...
 )
@@ -123,10 +186,9 @@ end
 @export function gen_bands(
     args...;
     xsymbol = :ϕ,
-    x_len = 50,
-    x_lower = 0.0,
-    x_upper = π/2,
-    xs = range(x_lower, x_upper, length=x_len),
+    nsamples = 50,
+    bounds = (0.0, π/2),
+    xs = range(bounds..., length=nsamples),
     kwargs...
 )
     gen_bands!(Vector{DataColumn}(xsymbol, xs), args...; xs = xs, xsymbol = xsymbol, kwargs...)
@@ -134,22 +196,19 @@ end
 
 @export function gen_bands!(
     cols::Vector{DataColumn},
-    N = 14;
-    l = DEFAULT_LENGTH,
-    ϕ = 1.0,
+    args...;
     xsymbol = :ϕ,
-    x_len = 1500,
-    x_lower = 0.0,
-    x_upper = π/2,
-    xs = range(x_lower, x_upper, length=x_len),
-    α = 1.0,
-    dirname = "$(now())_gen_bands($(N), alpha=$α)"
+    nsamples = 50,
+    bounds = (0.0, π/2),
+    xs = range(bounds..., length=nsamples),
+    dirname = "$(now())_gen_bands()",
+    kwargs...
 )
     mkpath(joinpath("data", dirname))
 
     @showprogress 1 "" for (idx,col) in enumerate(cols)
-        sim = LiteSimulation(N, ϕ=ϕ, l=l, α=α, ρ0 = Diagonal([0.0, 1.0, 0.0]); (xsymbol => col.metadata.x,)...)
-        col.metadata = (col.metadata..., N=N, sim = sim)
+        sim = LiteSimulation(args...; kwargs..., (xsymbol => col.metadata.x,)...)
+        col.metadata = (col.metadata..., sim = sim)
         @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
     end
 
@@ -183,24 +242,28 @@ end
 @export function gen_near_bands!(
     cols,
     N = 14;
-    y_len = 500,
-    y_lower = 0.0,
-    y_upper = 2.8,
-    ys = range(y_lower, y_upper, length=y_len),
-    threshold = 0.1,
-    α = 1.0,
-    dirname = "$(now())_gen_near_bands($(N), alpha=$α)",
-    f = calc_data1
+    ysymbol = :E,
+    bounds = energy_bounds(cols),
+    nsamples = 500,
+    ys = range(bounds..., length=nsamples),
+    threshold = nothing,
+    dirname = "$(now())_gen_near_bands($(N))",
+    f = calc_data1,
+    cond = (sim, y) -> isnothing(threshold) ? true : any(abs.(y .- sim.eig.values) .< threshold),
+    clear = true,
+    kwargs...
 )
     mkpath(joinpath("data", dirname))
 
-    @showprogress 1 "" for (idx,col) in enumerate(cols)
+    @showprogress 1 "" for (idx, col) in enumerate(cols)
         sim = col.metadata.sim
-        initialize!(col, ys)
-        for (i,y) in enumerate(ys)
-            if any(abs.(y .- sim.eig.values) .< threshold) && !col.touched[i]
+        if clear || col.ys != ys || col.ysymbol != ysymbol
+            initialize!(col, ys, ysymbol)
+        end
+        for (i, y) in enumerate(ys)
+            if cond(sim, y) && !col.touched[i]
                 col.touched[i] = true
-                col.data[i] = f(sim, y)
+                col.data[i] = f(sim; kwargs..., Dict(ysymbol => y)...)
             end
         end
 
@@ -210,181 +273,273 @@ end
     return cols
 end
 
-function calc_data1(sim::Simulation, y)
-    G = propagator(sim, y)
-    eigvals, U = nearest_eigenstates(sim.eig, y)
-    v, t, s = polarization(G, sim.γL, sim.ΓR, sim.Lz)
+function calc_data1(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2)
+    G = propagator(sim, E=E, α=α)
+    eigvals, U = nearest_eigenstates(sim.eig, E, n=n)
+    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
 
     return (
-        v = v,
-        t = t,
+        E=E, α=α, n=n,
+
         s = s,
+        t = t,
         eigvals = eigvals,
         G = U'G*U,
-        Lx = U'sim.Lx*U,
-        Ly = U'sim.Ly*U,
-        Lz = U'sim.Lz*U,
         γL = U'sim.γL*U,
         ΓL = U'sim.ΓL*U,
-        ΓR = U'sim.ΓR*U
+        ΓR = U'sim.ΓR*U,
+        L = map(Li -> U'Li*U, sim.L)
     )
 end
 
-function calc_data2(sim::Simulation, y)
-    G = propagator(sim, y)
-    eigvals, U = nearest_eigenstates(sim.eig, y)
-    vx, t, _ = polarization(G, sim.γL, sim.ΓR, sim.Lx)
-    vy, _, _ = polarization(G, sim.γL, sim.ΓR, sim.Ly)
-    vz, _, _ = polarization(G, sim.γL, sim.ΓR, sim.Lz)
+function calc_data2(sim::Simulation; E=sim.μ, α=DEFAULT_α)
+    G = propagator(sim, E=E, α=α)
+    carbon_atoms = collect(filter(x -> x isa Carbon, sim.mol.atoms))
+
+    Ls = collect(zip(
+        (angularmomentum(:x, sim.mol, atom) for atom in carbon_atoms),
+        (angularmomentum(:y, sim.mol, atom) for atom in carbon_atoms),
+        (angularmomentum(:z, sim.mol, atom) for atom in carbon_atoms)
+    ))
+
+    eigvals, U = nearest_eigenstates(sim.eig, E)
+
+    ss = NTuple{3,Complex{Float64}}[]
+    ts = Float64[]
+
+    for L in Ls
+        s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, L)
+        push!(ss, v)
+        push!(ts, t)
+    end
 
     return (
-        vx = vx,
-        vy = vy,
-        vz = vz,
-        t = t,
+        E=E, α=α, n=n,
+
+        ss = ss,
+        ts = ts,
         eigvals = eigvals,
+        G = U'G*U,
+        γL = U'sim.γL*U,
+        ΓL = U'sim.ΓL*U,
+        ΓR = U'sim.ΓR*U,
+        Ls = [map(Li -> U'Li*U, L) for L in Ls]
     )
 end
 
-function datamap(f, cols::Vector{DataColumn})
-    ys = mapreduce(a -> collect(a.ys), hcat, cols)
-    xs = mapreduce(a -> a.metadata.x, vcat, cols)
-    xs = [x for _ in 1:size(ys, 1), x in xs]
-    zs = mapreduce(a -> map(f, a.data), hcat, cols)
-    return xs, ys, zs
+# Calculate the reduced
+
+function calc_data3(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2, nmin=1)
+    G = propagator(sim, E=E, α=α)
+    Gfull = fullpropagator(sim, E=E, α=α)
+    eigvals, U = nearest_eigenstates(sim.eig, E, n=n, nmin=nmin)
+    Ufull = U ⊗ σ0
+
+    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
+
+    return (
+        E=E, α=α, n=n,
+
+        s = s,
+        t = t,
+        eigvals = eigvals,
+
+        G = U'G*U,
+        Gfull = Ufull'Gfull*Ufull,
+        γL = U'sim.γL*U,
+        ΓL = U'sim.ΓL*U,
+        ΓR = U'sim.ΓR*U,
+        L = map(Li -> U'Li*U, sim.L),
+    )
 end
 
-function datamap(f, slices::Vector{DataSlice})
-    xs = mapreduce(a -> a.metadata.x, vcat, slices)
-    ys = mapreduce(a -> f(a.data), vcat, slices)
-    return xs, ys
+function calc_data4(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2)
+    G = propagator(sim, E=E, α=α, λ=λ)
+    eigvals, U, V = nearest_eigenstates(sim.eig, E, n=n)
+
+    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
+
+    return (
+        E=E, α=α, λ=λ, n=n,
+
+        s = s,
+        t = t,
+        eigvals = eigvals,
+        G = G,
+        U = U,
+        V = V,
+        γL = sim.γL,
+        ΓL = sim.ΓL,
+        ΓR = sim.ΓR,
+        L = sim.L
+    )
 end
 
-function ranges(cols::Vector{DataColumn})
-    xs = mapreduce(a -> a.metadata.x, vcat, cols)
-    ys = collect(cols[1].ys)
-    return xs, ys
-end
+function calc_data5(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2, Γτ=1.0, γL=sim.γL)
+    G = propagator(sim, E=E, α=α, ΓL=I / (Γτ*α*λ))
+    eigvals, U = nearest_eigenstates(sim.eig, E, n=n)
+    s, t = calculate_s_and_t(G, γL ./ (2π*Γτ), sim.ΓR, sim.L)
 
-function Base.range(slices::Vector{DataSlice})
-    return mapreduce(a -> a.metadata.x, vcat, slices)
-end
+    return (
+        E=E, α=α, n=n,
 
-function atpoint(
-    f,
-    x,
-    y;
-    calc = calc_data1,
-    N = 14,
-    l = DEFAULT_LENGTH,
-    α = 1.0
-)
-    sim = LiteSimulation(N, ϕ=x, l=l, α=α)
-    return f(calc(sim, y))
+        s = s,
+        t = t,
+        eigvals = eigvals,
+        G = U'G*U,
+        γL = U'sim.γL*U,
+        ΓL = U'sim.ΓL*U,
+        ΓR = U'sim.ΓR*U,
+        L = map(Li -> U'Li*U, sim.L)
+    )
 end
-
-gaussian(x, x0, σ) = exp(-(x - x0)^2 / (2σ^2))
-box(x, x0, σ) = abs(x - x0) < σ ? 1.0 : 0.0
 
 @export percentage(x) = 100x
 
-@export transmission(x::NamedTuple; λ=8e-3) = get(x, :t, 0.0)
-@export spintransmission(x::NamedTuple; λ=8e-3) = λ*get(x, :s, 0.0)
-@export polarization(x::NamedTuple; λ=8e-3) = λ*get(x, :s, 0.0) / get(x, :t, 1e-16)
+@export function transmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    return get(x, :transmission, get(x, :t, 0.0) * (α*λ)^2)
+end
 
-@export Cvec(x::NamedTuple; λ=8e-3, v = :vz) = λ*2imag(get(x, v, 0.0))# * get(x, :t, 1e-16)
-@export Cveclen(x::NamedTuple; λ=8e-3) = sqrt(sum(Cvec(x, v = v)^2 for v in (:vx, :vy, :vz)))
-@export Cvecproj(x::NamedTuple; λ=8e-3, v = :vz) = abs(Cvec(x, v = v)) / Cveclen(x)
+@export function spintransmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    return get(x, :spintransmission, (λ * (α*λ)^2) * real.(get(x, :s, [0.0, 0.0, 0.0])))
+end
+spintransmission(i::Int; kwargs...) = (x::NamedTuple) -> spintransmission(x, i; kwargs...)
+spintransmission(x::NamedTuple, i; kwargs...) = spintransmission(x; kwargs...)[i]
 
-@export Dvec(x::NamedTuple; λ=8e-3, v = :vz) = λ*2real(get(x, v, 0.0))# * get(x, :t, 1e-16)
-@export Dveclen(x::NamedTuple; λ=8e-3) = sqrt(sum(Dvec(x, v = v)^2 for v in (:vx, :vy, :vz)))
-@export Dvecproj(x::NamedTuple; λ=8e-3, v = :vz) = abs(Dvec(x, v = v)) / Dveclen(x)
+@export polarization(x::NamedTuple; kwargs...) = spintransmission(x; kwargs...) / transmission(x; kwargs...)
+polarization(x::NamedTuple, i; kwargs...) = spintransmission(x, i; kwargs...) / transmission(x; kwargs...)
+polarization(i::Int; kwargs...) = (x::NamedTuple) -> polarization(x, i; kwargs...)
 
+@export function precession(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    return λ*imag.(get(x, :s, [0.0, 0.0, 0.0])) * (α*λ)^2 / transmission(x; α=α, λ=λ)
+end
+precession(x::NamedTuple, i; kwargs...) = precession(x; kwargs...)[i]
+precession(i::Int; kwargs...) = (x::NamedTuple) -> precession(x, i; kwargs...)
 
-function transmission_twoband(x::NamedTuple; λ=8e-3)
-    G = get(x, :G, fill(0.0, 2, 2))
+@export function transmission_reduced(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :G, nothing)
+    isnothing(G) && return 0.0
+
+    γL, ΓR = (α*λ)*x[:γL], (α*λ)*x[:ΓR]
+    return 2real(dot(γL, G'ΓR*G))
+end
+
+@export function spintransmission_reduced(x::NamedTuple, i=nothing; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :G, nothing)
+    isnothing(G) && return (i == nothing ? [0.0, 0.0, 0.0] : 0.0)
+    Ls, γL, ΓR = x[:L], (α*λ)*x[:γL], (α*λ)*x[:ΓR]
+
+    X = G*γL
+    Y = ΓR*G
+    s = map(L -> 4real(dot(X, Y*L*G)), Ls)
+    return (i == nothing ? s : s[i]) * λ
+end
+spintransmission_reduced(i::Int; kwargs...) = (x::NamedTuple) -> spintransmission_reduced(x, i; kwargs...)
+
+@export function polarization_reduced(x::NamedTuple, i=nothing; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :G, nothing)
+    isnothing(G) && return (i == nothing ? [0.0, 0.0, 0.0] : 0.0)
+    Ls, γL, ΓR = x[:L], (α*λ)*x[:γL], (α*λ)*x[:ΓR]
+
+    X = G*γL
+    Y = ΓR*G
+    s = map(L -> 4real(dot(X, Y*L*G)), Ls)
+    t = 2real(dot(X, Y))
+    return (i == nothing ? s : s[i]) * λ / t
+end
+polarization_reduced(i::Int; kwargs...) = (x::NamedTuple) -> polarization_reduced(x, i; kwargs...)
+
+@export function precession_reduced(x::NamedTuple, i=nothing; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :G, nothing)
+    isnothing(G) && return (i == nothing ? [0.0, 0.0, 0.0] : 0.0)
+    Ls, γL, ΓR = x[:L], (α*λ)*x[:γL], (α*λ)*x[:ΓR]
+
+    X = G*γL
+    Y = ΓR*G
+    s = map(L -> 4imag(dot(X, Y*L*G)), Ls)
+    t = 2real(dot(X, Y))
+    return (i == nothing ? s : s[i]) * λ / t
+end
+precession_reduced(i::Int; kwargs...) = (x::NamedTuple) -> precession_reduced(x, i; kwargs...)
+
+@export function fulltransmission_reduced(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :Gfull, fill(0.0, 4, 4))
     iszero(G) && return 0.0
-    γL = get(x, :γL, fill(0.0, 2, 2))
-    ΓR = get(x, :ΓR, fill(0.0, 2, 2))
+    γL, ΓR = (α*λ)*x[:γL] ⊗ σ0, (α*λ)*x[:ΓR] ⊗ σ0
+
     return real(dot(γL, G'ΓR*G))
 end
 
-function spintransmission_twoband(x::NamedTuple; λ=8e-3)
-    G = get(x, :G, fill(0.0, 2, 2))
-    iszero(G) && return 0.0
-    Λ = λ*get(x, :L, fill(0.0, 2, 2))
-    γL = get(x, :γL, fill(0.0, 2, 2))
-    ΓR = get(x, :ΓR, fill(0.0, 2, 2))
-    return 2*real(dot(γL, G'ΓR*G*Λ*G))
-end
+@export function fullspintransmission_reduced(x::NamedTuple, i=nothing; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :Gfull, nothing)
+    isnothing(G) && return 0.0
+    γL, ΓR = (α*λ)*x[:γL] ⊗ σ0, (α*λ)*x[:ΓR] ⊗ σ0
+    M = Matrix(1.0I, size(G, 1) ÷ 2, size(G, 2) ÷ 2)
 
-function polarization_twoband(x::NamedTuple; λ=8e-3)
-    G = get(x, :G, fill(0.0, 2, 2))
-    iszero(G) && return 0.0
-    Λ = λ*get(x, :L, fill(0.0, 2, 2))
-    γL = get(x, :γL, fill(0.0, 2, 2))
-    ΓR = get(x, :ΓR, fill(0.0, 2, 2))
-    X = G*γL
-    Y = ΓR*G
-    return 2*real(dot(X, Y*Λ*G)) / real(dot(X, Y))
+    s = map(σi -> real(dot(γL, G'ΓR*(M ⊗ σi)*G)), collect(σ))
+    return (i == nothing ? s : s[i])
 end
+fullspintransmission_reduced(i::Int; kwargs...) = (x::NamedTuple) -> fullspintransmission_reduced(x, i; kwargs...)
 
-function smoothen(cols::Vector{DataColumn}; kwargs...)
+@export function fullpolarization_reduced(x::NamedTuple, i=nothing; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :Gfull, nothing)
+    isnothing(G) && return 0.0
+    γL, ΓR = (α*λ)*x[:γL] ⊗ σ0, (α*λ)*x[:ΓR] ⊗ σ0
+    M = Matrix(1.0I, size(G, 1) ÷ 2, size(G, 2) ÷ 2)
+
+    s = map(σi -> real(dot(γL, G'ΓR*(M ⊗ σi)*G)), collect(σ))
+    t = real(dot(γL, G'ΓR*G))
+    return (i == nothing ? s : s[i]) / t
+end
+fullpolarization_reduced(i::Int; kwargs...) = (x::NamedTuple) -> fullpolarization_reduced(x, i; kwargs...)
+
+@export function smoothen(f, cols::Vector{DataColumn}; kwargs...)
     out = Vector{DataColumn}(undef, length(cols))
     @showprogress 1 "" for (i, col) in enumerate(cols)
-        out[i] = smoothen(col; kwargs...)
+        out[i] = smoothen(f, col; kwargs...)
     end
     return out
 end
 
-function smoothen(cols::Vector{DataColumn}, y0; kwargs...)
+function smoothen(f, cols::Vector{DataColumn}, y0; kwargs...)
     out = Vector{DataSlice}(undef, length(cols))
     @showprogress 1 "" for (i, col) in enumerate(cols)
-        out[i] = smoothen(col, y0; kwargs...)
+        out[i] = smoothen(f, col, y0; kwargs...)
     end
     return out
 end
 
-function smoothen(
-    col::DataColumn;
-    kwargs...
-)
+function smoothen(f, col::DataColumn; kwargs...)
     out = copy(col)
-    for (i, y0) in enumerate(ys)
-        out.data[i] = smoothen(col, y0, kwargs...).data
+    for (i, y0) in enumerate(col.ys)
+        out.data[i] = smoothen(f, col, y0; kwargs...).data
     end
     return out
 end
 
-function smoothen(
-    col::DataColumn,
-    y0;
-    σ = 0.1,
-    s = spintransmission,
-    t = transmission,
-    w = gaussian
-)
+function smoothen(fs::NamedTuple, col::DataColumn, y0; σ = 0.1, w = gaussian)
     ws = w.(col.ys, y0, σ)
-    slice = DataSlice(
-        col.metadata,
-        y0,
-        (p = sum(s.(col.data) .* ws) / sum(t.(col.data) .* ws),)
-    )
+    slice = DataSlice(col.metadata, y0, map(f -> sum(x -> f(x[1]) * x[2], zip(col.data, ws)), fs))
+    return slice
+end
+
+function smoothen(f, col::DataColumn, y0; σ = 0.1, w = gaussian)
+    ws = w.(col.ys, y0, σ)
+    slice = DataSlice(col.metadata, y0, (result = sum(f.(col.data) .* ws),))
     return slice
 end
 
 Λ12(x::NamedTuple; λ=8e-3) = 2*imag(λ*get(x, :L, fill(0.0, 2, 2))[1,2])
-function prefactor(x::NamedTuple; λ=8e-3, L = :Lz)
-    G = get(x, :G, fill(0.0, 2, 2))
-    iszero(G) && return 0.0, 0.0, 1e-16
-    A = -im .* (G .- G') ./ 2
+function prefactor(x::NamedTuple; i=nothing, α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
+    G = get(x, :G, nothing)
+    isnothing(G) && return (i == nothing ? [0.0, 0.0, 0.0] : 0.0)
+    Ls, γL, ΓR = x[:L], (α*λ)*x[:γL], (α*λ)*x[:ΓR]
 
-    Λ = λ*get(x, L, fill(0.0, 2, 2))
-    γL = get(x, :γL, fill(0.0, 2, 2))
-    ΓL = get(x, :ΓL, fill(0.0, 2, 2))
-    ΓR = get(x, :ΓR, fill(0.0, 2, 2))
+    Λ12 = λ .* map(L -> L[1,2], Ls)
+    s = 2 * (G'*(γL*G*ΓR - ΓR*G*γL)*G')[2,1]
+    t = real(tr(γL*G'ΓR*G))
+    return imag(i == nothing ? Λ12 : Λ12[i]), s / t
 
-    return 2*imag(Λ[1,2]), real((A*(γL*A'ΓR - ΓR*A'γL)*A)[1,2]), real(dot(γL, A'ΓR*A))
 end
 
 function polarization_prefactor(x::NamedTuple)
@@ -403,7 +558,7 @@ function annotate_crossings!(f::Function, points; N=14, fontsize=6, xtransform=i
     Plots.plot!()
 end
 
-function yslice(cols::Vector{DataColumn}, y0)
+@export function yslice(cols::Vector{DataColumn}, y0)
     idx = indexsnap(cols[1].ys, y0)
     return [DataSlice(col.metadata, y0, col.data[idx]) for col in cols]
 end
