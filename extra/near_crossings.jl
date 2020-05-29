@@ -49,5 +49,32 @@ let
         xsymbol = xsymbol,
         ysymbol = ysymbol,
         calc = TheoryOfCISS.calc_data1,
+        threshold=1e-6,
+    )
+end
+
+###
+
+let
+    f = x -> 100real(x.s) / real(x.t)
+    xsymbol = :δz
+    x0 = 0.8
+    ysymbol = :E
+    y0 = -3.5
+    mol = Helicene(N=7)
+
+    x0, y0 = TheoryOfCISS.find_crossing(
+        x0, y0, mol,
+        xsymbol = xsymbol,
+        threshold=1e-6,
+        attenuation=1e-2
+    )
+
+    TheoryOfCISS.atpoint(
+        f, x0, y0, mol,
+        xsymbol = xsymbol,
+        ysymbol = ysymbol,
+        calc = TheoryOfCISS.calc_data6,
+        threshold=1e-6,
     )
 end

@@ -4,6 +4,27 @@ function eigensort(H; by=identity)
     return Eigen(vals[s], vecs[:, s])
 end
 
+function symmetrize!(A, B)
+    size(A) != size(B) && error("A and B have different sizes")
+    for (i, j) in zip(eachindex(A), eachindex(B))
+        a, b = A[i], B[j]
+        A[i] = (a + b) / 2
+        B[j] = (a - b) / 2
+    end
+    return A, B
+end
+
+function symmetrize!(A::Array, B::Array)
+    size(A) != size(B) && error("A and B have different sizes")
+    for i in eachindex(A)
+        a, b = A[i], B[i]
+        A[i] = (a + b) / 2
+        B[i] = (a - b) / 2
+    end
+    return A, B
+end
+
+
 struct LiteSimulation <: Simulation
     constructor::AbstractMoleculeConstructor
     mol::Molecule
@@ -15,7 +36,9 @@ struct LiteSimulation <: Simulation
     S0
     γL
     ΓL
+    ΔΓL
     ΓR
+    ΔΓR
     L
 end
 Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
@@ -33,6 +56,9 @@ Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
     ρR = 1.0I,
     seed = 47,
     rng = MersenneTwister(seed),
+
+    αL = 1.0,
+    αR = 1.0,
 
     kwargs...
 )
@@ -59,41 +85,57 @@ Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
 
     left_atom, right_atom = mol.atoms[m.left_index], mol.atoms[end-m.right_index+1]
 
-    γL = makecoupling(rng, ρ0, H0, Molecules.indices(mol, left_atom))
-    ΓL = makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
-    ΓR = makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
+    γL = αL .* makecoupling(rng, ρ0, H0, Molecules.indices(mol, left_atom))
+    ΓLup = αL .* makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
+    ΓLdown = αL .* makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
+    ΓRup = αR .* makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
+    ΓRdown = αR .* makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
+
+    ΓL, ΔΓL = symmetrize!(ΓLup, ΓLdown)
+    ΓR, ΔΓR = symmetrize!(ΓRup, ΓRdown)
 
     L = map(x -> angularmomentum(x, mol), [:x, :y, :z])
 
-    return LiteSimulation(m, mol, eig, μ, Δ, H, H0, S0, γL, ΓL, ΓR, L)
+    return LiteSimulation(m, mol, eig, μ, Δ, H, H0, S0, γL, ΓL, ΔΓL, ΓR, ΔΓR, L)
 end
 
-makecoupling(rng, ρ::UniformScaling, A, indices) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices)
-makecoupling(rng::UniformScaling, ρ::UniformScaling, A, indices) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices)
+makecoupling(rng, ρ::UniformScaling, A, indices; kwargs...) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices; kwargs...)
+makecoupling(rng::UniformScaling, ρ::UniformScaling, A, indices; kwargs...) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices; kwargs...)
 
-function makecoupling(rng::UniformScaling, ρ, A, indices)
+function makecoupling(rng::UniformScaling, ρ, A, indices; err=10)
     U = spzeros(Float64, size(ρ, 2), size(A, 1))
     U[:, indices] = Matrix(rng, size(ρ, 2), length(indices))
     B = U'ρ*U
     rmul!(B, rank(B)*inv(tr(B)))
-    !isposdef!(B + 1e-16I) && error("Invalid coupling!")
+    if !isposdef!(B + 1e-16I)
+        err == 0 && error("Invalid coupling!")
+        return makecoupling(rng, ρ, A, indices, err=err-1)
+    end
     return B
 end
 
-function makecoupling(rng, ρ, A, indices)
+function makecoupling(rng, ρ, A, indices; err=10)
     U = spzeros(Float64, size(ρ, 2), size(A, 1))
     U[:, indices] = randn(rng, size(ρ, 2), length(indices))
     B = U'ρ*U
     rmul!(B, rank(B)*inv(tr(B)))
-    !isposdef!(B + 1e-16I) && error("Invalid coupling!")
+    if !isposdef!(B + 1e-16I)
+        err == 0 && error("Invalid coupling!")
+        return makecoupling(rng, ρ, A, indices, err=err-1)
+    end
     return B
 end
 
-@export function fullpropagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ)
-    return inv(
-        (E*I - sim.H + α * λ * im * (sim.ΓL + sim.ΓR) / 2) ⊗ σ0 -
-        λ * sum(L ⊗ σ for (L, σ) in zip(sim.L, σ))
-    )
+@export function fullpropagator(
+    sim::Simulation;
+    E = sim.μ,
+    α = DEFAULT_α,
+    λ = DEFAULT_λ,
+    Γ = (sim.ΓL + sim.ΓR) ⊗ σ0,
+    H = sim.H ⊗ σ0,
+    Λσ = λ * sum(L ⊗ σ for (L, σ) in zip(sim.L, σ)),
+)
+    return inv(E*I - H + α * λ * im * Γ / 2 - Λσ)
 end
 
 @export function propagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ,
@@ -198,7 +240,17 @@ end
     eigvals = eig.values[indices[nmin:(nmin+n-1)]]
     U = reduce(hcat, (eig.vectors[:, indices[i]] for i in nmin:(nmin+n-1)))
     V = reduce(hcat, (eig.vectors[:, indices[i]] for i in (nmin+n):N))
-    return eigvals, U, V
+    return eigvals, U, V, indices
+end
+
+@export function eigenstate(sim::Simulation; E = sim.μ, ϕ=0.0)
+    index_below = findlast(y -> E - y > 0, sim.eig.values)
+    index_above = findfirst(y -> E - y <= 0, sim.eig.values)
+    vals = sim.eig.values[index_below], sim.eig.values[index_above]
+    vecs = sim.eig.vectors[:, index_below], sim.eig.vectors[:, index_above]
+    x = (E - vals[1]) / (vals[2] - vals[1])
+    weights = sqrt(1 - x), exp(im*ϕ)*sqrt(x)
+    return sum(vecs .* weights)
 end
 
 @export function extract_slater_koster_params(l)

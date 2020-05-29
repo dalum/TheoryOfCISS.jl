@@ -2,8 +2,8 @@ module TheoryOfCISS
 
 using InlineExports
 
-using AtomicSimulationEnvironment
-@export const ase = AtomicSimulationEnvironment
+# using AtomicSimulationEnvironment
+# @export const ase = AtomicSimulationEnvironment
 
 using BSON: @save, @load
 using Dates: day, month, now, today, year
@@ -39,6 +39,8 @@ include("continuous.jl")
 include("lite.jl")
 include("lite_datagen.jl")
 include("plots_recipes.jl")
+
+# include("../extra/scratch.jl")
 
 # include("basic.jl")
 

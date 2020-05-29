@@ -8,8 +8,8 @@ using RecipesBase
     xs = xtransform.(xs)
     zs = ztransform.(zs)
 
-    xlims --> (xs[1], xs[end])
-    ylims --> (ys[1], ys[end])
+    xlims --> get(cols[1].metadata, :xlims, (xs[1], xs[end]))
+    ylims --> get(cols[1].metadata, :ylims, length(ys) >= 2 ? (ys[1], ys[end]) : nothing)
 
     fzs = filter(!isnan, zs)
     maxz = maximum(abs.(fzs))
@@ -38,15 +38,15 @@ using RecipesBase
     (xs, ys, zs)
 end
 
-@recipe function f(cols::Vector{DataColumn}; xtransform=identity, markerfunction=x->:black)
+@recipe function f(cols::Vector{DataColumn}; xtransform=identity, markerfunction=x->:black, step=1)
     xs, ys = ranges(cols)
     xlabel --> get(cols[1].metadata, :xsymbol, nothing)
     xs = xtransform.(xs)
-    eigvalues, energy_range = energy_bands(cols)
-    xlims --> (xs[1], xs[end])
-    if length(ys) >= 2
-        ylims --> (ys[1], ys[end])
-    end
+    eigvalues, energy_range = energy_bands(cols, step=step)
+
+    xlims --> get(cols[1].metadata, :xlims, (xs[1], xs[end]))
+    ylims --> get(cols[1].metadata, :ylims, length(ys) >= 2 ? (ys[1], ys[end]) : nothing)
+
     yticks --> energy_range
 
     linewidth --> 1
@@ -88,6 +88,8 @@ end
     xs = col.metadata.sim.eig.values
     xticks --> range(floor(Int, minimum(xs)), ceil(Int, maximum(xs)), step=1)
 
+    xlims --> get(col.metadata, :xlims, (xs[1], xs[end]))
+
     linewidth --> 1
     linecolor --> :black
     legend --> false
@@ -101,4 +103,50 @@ end
     end
 
     xs
+end
+
+@recipe function f(g::Function, col::DataColumn; xtransform=identity, markerfunction=x->:black)
+    xs = col.ys
+    #xticks --> range(floor(Int, minimum(xs)), ceil(Int, maximum(xs)), step=1)
+
+    ys = map(g, col.data)
+    xlabel := col.ysymbol
+
+    xlims --> get(col.metadata, :ylims, length(ys) >= 2 ? (xs[1], xs[end]) : nothing)
+
+    linewidth --> 1
+    linecolor --> :black
+    legend --> false
+
+    xs, ys
+end
+
+@recipe function f(T::Type{DataScatter}, g::Function, cols::Vector{DataColumn}; xtransform=identity, ztransform=identity, contrast=8)
+    xs, ys, zs = T(g, cols)
+    xlabel := get(cols[1].metadata, :xsymbol, nothing)
+    ylabel := cols[1].ysymbol
+    xs = xtransform.(xs)
+    zs = ztransform.(zs)
+
+    xlims --> get(cols[1].metadata, :xlims, (xs[1], xs[end]))
+    ylims --> get(cols[1].metadata, :ylims, length(ys) >= 2 ? (ys[1], ys[end]) : nothing)
+
+    fzs = filter(!isnan, zs)
+    maxz = maximum(abs.(fzs))
+    stdz = std(fzs)
+    clim = max(min(maxz, contrast*stdz), maxz / contrast)
+
+    if all(x -> x >= 0, zs)
+        clims --> (0.0, clim)
+        color --> :ice_r
+    else
+        clims --> (-clim, clim)
+        color --> :curl
+    end
+
+    zcolor --> zs
+    ms --> max.(1.0, 20 .* sqrt.(abs.(zs)))
+    α --> sqrt(0.5)
+
+    (xs, ys)
 end

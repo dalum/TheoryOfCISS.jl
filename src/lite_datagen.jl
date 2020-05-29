@@ -44,14 +44,19 @@ Base.setindex!(col::DataColumn, value, ys...) = setindex!(col.data, map(indexsna
 Base.copy(col::DataColumn) = DataColumn(col.metadata, col.ys, col.ysymbol, copy(col.data), col.touched)
 Base.show(io::IO, col::DataColumn) = print(io, "DataColumn(...)")
 
+@export struct DataScatter end
+
+function DataScatter(f, cols::Vector{DataColumn})
+    xs = mapreduce(col -> [col.metadata.x for _ in col.ys], vcat, cols)
+    ys = mapreduce(col -> col.ys, vcat, cols)
+    zs = mapreduce(col -> map(f, col.data), vcat, cols)
+    return xs, ys, zs
+end
+
 function indexsnap(xs, x0)
     x1, x2 = x0 .- inv.(extrema(inv.(x0 .- xs)))
     x0 = abs(x2 - x0) > abs(x1 - x0) ? x1 : x2
     return findfirst(x -> x == x0, xs)
-end
-
-function Base.map(f, cols::Vector{DataColumn})
-    return mapreduce(a -> map(f, a.data), hcat, cols)
 end
 
 @export function datamap(f, cols::Vector{DataColumn})
@@ -68,9 +73,9 @@ function datamap(f, slices::Vector{DataSlice})
     return xs, ys
 end
 
-function energy_bands(cols::Vector{DataColumn})
+function energy_bands(cols::Vector{DataColumn}; step=1)
     eigvalues = mapreduce(col -> col.metadata.sim.eig.values, hcat, cols)'
-    energy_range = range(floor(Int, minimum(eigvalues)), ceil(Int, maximum(eigvalues)), step=1)
+    energy_range = range(floor(Int, minimum(eigvalues)), ceil(Int, maximum(eigvalues)), step=step)
     return eigvalues, energy_range
 end
 
@@ -120,6 +125,7 @@ function find_crossing(
     max_iterations = 1e1,
     δx = 1e-6,
     attenuation = 1e-2,
+    rounding = :average,
     kwargs...
 )
     function optim(x, y)
@@ -138,6 +144,15 @@ function find_crossing(
         abs(d) < threshold && return x, y
         x = x - clamp(d*δx/δd, -attenuation, attenuation)
     end
+
+    if rounding in (:upper, :lower, :both)
+        sim = LiteSimulation(args...; kwargs..., (xsymbol => x,)...)
+        eigvals, _ = nearest_eigenstates(sim.eig, y, n=2)
+        rounding == :lower && return (x, minimum(eigvals))
+        rounding == :upper && return (x, maximum(eigvals))
+        rounding == :both && return (x, minimum(eigvals), maximum(eigvals))
+    end
+
     return x, y
 end
 
@@ -201,15 +216,16 @@ end
     nsamples = 50,
     bounds = (0.0, π/2),
     xs = range(bounds..., length=nsamples),
+    save = false,
     dirname = "$(now())_gen_bands()",
     kwargs...
 )
-    mkpath(joinpath("data", dirname))
+    save && mkpath(joinpath("data", dirname))
 
     @showprogress 1 "" for (idx,col) in enumerate(cols)
         sim = LiteSimulation(args...; kwargs..., (xsymbol => col.metadata.x,)...)
-        col.metadata = (col.metadata..., sim = sim)
-        @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
+        col.metadata = (col.metadata..., sim = sim, xlims=extrema(xs))
+        save && @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
     end
 
     return cols
@@ -217,60 +233,63 @@ end
 
 @export function gen_on_bands!(
     cols;
-    clear = false,
+    save = false,
     dirname = "$(now())_gen_on_bands()",
-    f = calc_data1
+    kwargs...
 )
-    mkpath(joinpath("data", dirname))
+    save && mkpath(joinpath("data", dirname))
 
     @showprogress 1 "" for (idx,col) in enumerate(cols)
-        sim = col.metadata.sim
-        initialize!(col, sim.eig.values)
-        for (i,y) in enumerate(col.ys)
-            if !col.touched[i]
-                col.touched[i] = true
-                col.data[i] = f(sim, y)
-            end
-        end
-
-        @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
+        ys = filter(y -> bounds[1] <= y <= bounds[2], col.metadata.sim.eig.values),
+        gen_col!(col; kwargs..., ys = ys, _progress_dt=Inf)
+        save && @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
     end
 
     return cols
 end
 
 @export function gen_near_bands!(
-    cols,
-    N = 14;
-    ysymbol = :E,
-    bounds = energy_bounds(cols),
-    nsamples = 500,
-    ys = range(bounds..., length=nsamples),
-    threshold = nothing,
-    dirname = "$(now())_gen_near_bands($(N))",
-    f = calc_data1,
-    cond = (sim, y) -> isnothing(threshold) ? true : any(abs.(y .- sim.eig.values) .< threshold),
-    clear = true,
+    cols;
+    save = false,
+    dirname = "$(now())_gen_near_bands()",
     kwargs...
 )
-    mkpath(joinpath("data", dirname))
+    save && mkpath(joinpath("data", dirname))
 
     @showprogress 1 "" for (idx, col) in enumerate(cols)
-        sim = col.metadata.sim
-        if clear || col.ys != ys || col.ysymbol != ysymbol
-            initialize!(col, ys, ysymbol)
-        end
-        for (i, y) in enumerate(ys)
-            if cond(sim, y) && !col.touched[i]
-                col.touched[i] = true
-                col.data[i] = f(sim; kwargs..., Dict(ysymbol => y)...)
-            end
-        end
-
-        @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
+        gen_col!(col; kwargs..., _progress_dt=Inf)
+        save && @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
     end
 
     return cols
+end
+
+@export function gen_col!(
+    col::DataColumn;
+    ysymbol = :E,
+    bounds = energy_bounds(cols),
+    nsamples = 50,
+    ys = range(bounds..., length=nsamples),
+    threshold = nothing,
+    f = calc_data1,
+    cond = (sim, y) -> isnothing(threshold) ? true : any(abs.(y .- sim.eig.values) .< threshold),
+    clear = true,
+    _progress_dt = 1,
+    kwargs...
+
+)
+    col.metadata = (col.metadata..., ylims=extrema(ys))
+    sim = col.metadata.sim
+    if clear || col.ys != ys || col.ysymbol != ysymbol
+        initialize!(col, ys, ysymbol)
+    end
+    @showprogress _progress_dt for (i, y) in enumerate(ys)
+        if cond(sim, y) && !col.touched[i]
+            col.touched[i] = true
+            col.data[i] = f(sim; kwargs..., (ysymbol => y,)...)
+        end
+    end
+    return col
 end
 
 function calc_data1(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2)
@@ -394,10 +413,43 @@ function calc_data5(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2
     )
 end
 
+function calc_data6(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, c=0.25, f=0.0)
+    Γ = (sim.ΓR * (1 + c) + sim.ΔΓR * (1 - c)) / 2 + f*sim.ΓL
+    ΔΓ = (sim.ΓR * (1 - c) + sim.ΔΓR * (1 + c)) / 2
+
+    Gup = fullpropagator(
+        sim,
+        E = E,
+        α = α,
+        λ = λ,
+        Γ = Γ ⊗ σ0 + ΔΓ ⊗ σ[:z]
+    )
+    Gdown = fullpropagator(
+        sim,
+        E = E,
+        α = α,
+        λ = λ,
+        Γ = Γ ⊗ σ0 - ΔΓ ⊗ σ[:z]
+    )
+
+    γL = sim.γL ⊗ σ0
+    ΓL = sim.ΓL ⊗ σ0
+
+    t_up = tr(γL*Gup'ΓL*Gup)
+    t_down = tr(γL*Gdown'ΓL*Gdown)
+
+    return (
+        E=E, α=α, λ=λ,
+
+        spintransmission = t_up - t_down,
+        transmission = t_up + t_down,
+    )
+end
+
 @export percentage(x) = 100x
 
-@export function transmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
-    return get(x, :transmission, get(x, :t, 0.0) * (α*λ)^2)
+@export function transmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ), default=0.0)
+    return get(x, :transmission, get(x, :t, default) * (α*λ)^2)
 end
 
 @export function spintransmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
@@ -406,8 +458,8 @@ end
 spintransmission(i::Int; kwargs...) = (x::NamedTuple) -> spintransmission(x, i; kwargs...)
 spintransmission(x::NamedTuple, i; kwargs...) = spintransmission(x; kwargs...)[i]
 
-@export polarization(x::NamedTuple; kwargs...) = spintransmission(x; kwargs...) / transmission(x; kwargs...)
-polarization(x::NamedTuple, i; kwargs...) = spintransmission(x, i; kwargs...) / transmission(x; kwargs...)
+@export polarization(x::NamedTuple; kwargs...) = spintransmission(x; kwargs...) / transmission(x; default=1e-16, kwargs...)
+polarization(x::NamedTuple, i; kwargs...) = spintransmission(x, i; kwargs...) / transmission(x; default=1e-16, kwargs...)
 polarization(i::Int; kwargs...) = (x::NamedTuple) -> polarization(x, i; kwargs...)
 
 @export function precession(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
