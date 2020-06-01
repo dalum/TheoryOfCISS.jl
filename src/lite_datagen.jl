@@ -212,7 +212,7 @@ end
 @export function gen_bands!(
     cols::Vector{DataColumn},
     args...;
-    xsymbol = :ϕ,
+    xsymbol,
     nsamples = 50,
     bounds = (0.0, π/2),
     xs = range(bounds..., length=nsamples),
@@ -266,7 +266,7 @@ end
 
 @export function gen_col!(
     col::DataColumn;
-    ysymbol = :E,
+    ysymbol,
     bounds = energy_bounds(cols),
     nsamples = 50,
     ys = range(bounds..., length=nsamples),

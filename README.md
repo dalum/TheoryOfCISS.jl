@@ -24,7 +24,7 @@ using TheoryOfCISS
 Generate data for a helicene molecule with `N = 7` rings ([7] helicene), for `x` (geometry parameter `δz` in units of Ångström) on the interval `[0.5, 1.0]`, and `y` (energy `E` in units of electronvolts) on the interval `[-5.0, 0.0]`, sampling 100 points along each axis:
 ```julia
 cols = gen_bands(Helicene(N=7), xsymbol=:δz, bounds=(0.5, 1.0), nsamples=100);
-gen_near_bands!(cols, f=TheoryOfCISS.calc_data1, bounds=(-5, 0), nsamples=100);
+gen_near_bands!(cols, ysymbol=:E, bounds=(-5, 0), nsamples=100);
 ```
 Plot the polarization along the z-axis as a heatmap, and overlay the energies of the molecular states on top:
 ```julia

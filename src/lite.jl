@@ -195,11 +195,16 @@ end
     return vecs*vecs'
 end
 
-@export function fullhamiltonian(sim::Simulation; λ=DEFAULT_λ)
-    H = complex(sim.H ⊗ σ0)
-    #H += -im * sim.ΓR ⊗ σ0
-    H += sum(λ * Li ⊗ σi for (Li, σi) in zip(sim.L, σ))
-    return (H .+ H') ./ 2
+@export function fullhamiltonian(
+    sim::Simulation;
+    λ = DEFAULT_λ,
+    H = sim.H ⊗ σ0,
+    Lσ = sum(L ⊗ σ for (L, σ) in zip(sim.L, σ)),
+)
+    return let
+        H = H + λ*Lσ
+        (H .+ H') ./ 2
+    end
 end
 
 @export function adiabatic_polarization(sim::Simulation)

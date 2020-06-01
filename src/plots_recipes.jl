@@ -3,8 +3,8 @@ using RecipesBase
 @recipe function f(g::Function, cols::Vector{DataColumn}; xtransform=identity, ztransform=identity, contrast=8)
     xs, ys, zs = datamap(g, cols)
     xs, ys = xs[1, :], ys[:, 1]
-    xlabel := get(cols[1].metadata, :xsymbol, nothing)
-    ylabel := cols[1].ysymbol
+    xguide := get(cols[1].metadata, :xsymbol, nothing)
+    yguide := cols[1].ysymbol
     xs = xtransform.(xs)
     zs = ztransform.(zs)
 
@@ -18,10 +18,10 @@ using RecipesBase
 
     if all(x -> x >= 0, zs)
         clims --> (0.0, clim)
-        color --> :ice_r
+        seriescolor --> :bilbao
     else
         clims --> (-clim, clim)
-        color --> :pu_or
+        seriescolor --> :vik
     end
 
     # @series begin
@@ -40,7 +40,7 @@ end
 
 @recipe function f(cols::Vector{DataColumn}; xtransform=identity, markerfunction=x->:black, step=1)
     xs, ys = ranges(cols)
-    xlabel --> get(cols[1].metadata, :xsymbol, nothing)
+    xguide --> get(cols[1].metadata, :xsymbol, nothing)
     xs = xtransform.(xs)
     eigvalues, energy_range = energy_bands(cols, step=step)
 
@@ -110,7 +110,7 @@ end
     #xticks --> range(floor(Int, minimum(xs)), ceil(Int, maximum(xs)), step=1)
 
     ys = map(g, col.data)
-    xlabel := col.ysymbol
+    xguide := col.ysymbol
 
     xlims --> get(col.metadata, :ylims, length(ys) >= 2 ? (xs[1], xs[end]) : nothing)
 
@@ -123,8 +123,8 @@ end
 
 @recipe function f(T::Type{DataScatter}, g::Function, cols::Vector{DataColumn}; xtransform=identity, ztransform=identity, contrast=8)
     xs, ys, zs = T(g, cols)
-    xlabel := get(cols[1].metadata, :xsymbol, nothing)
-    ylabel := cols[1].ysymbol
+    xguide := get(cols[1].metadata, :xsymbol, nothing)
+    yguide := cols[1].ysymbol
     xs = xtransform.(xs)
     zs = ztransform.(zs)
 
@@ -138,10 +138,10 @@ end
 
     if all(x -> x >= 0, zs)
         clims --> (0.0, clim)
-        color --> :ice_r
+        color --> :bilbao
     else
         clims --> (-clim, clim)
-        color --> :curl
+        color --> :vik
     end
 
     zcolor --> zs
