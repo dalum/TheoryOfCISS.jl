@@ -31,5 +31,5 @@ Plot the polarization along the z-axis as a heatmap, and overlay the energies of
 using Plots
 
 heatmap(percentage∘polarization(3), cols);
-plot!(cols, xlabel="δz [Å]", ylabel="E [eV]")
+plot!(cols, xguide="δz [Å]", yguide="E [eV]")
 ```
