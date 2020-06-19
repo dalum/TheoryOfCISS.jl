@@ -79,12 +79,17 @@ function energy_bands(cols::Vector{DataColumn}; step=1)
     return eigvalues, energy_range
 end
 
-function energy_bounds(cols)
+function energy_bounds(cols::Vector{DataColumn})
     gmin, gmax = 0.0, 0.0
     for col in cols
-        gmin = min(gmin, floor(Int, minimum(col.metadata.sim.eig.values)))
-        gmax = max(gmax, ceil(Int, maximum(col.metadata.sim.eig.values)))
+        gmin, gmax = energy_bounds(col)
     end
+    return gmin, gmax
+end
+
+function energy_bounds(col::DataColumn)
+    gmin = min(gmin, floor(Int, minimum(col.metadata.sim.eig.values)))
+    gmax = max(gmax, ceil(Int, maximum(col.metadata.sim.eig.values)))
     return gmin, gmax
 end
 
@@ -200,22 +205,20 @@ end
 
 @export function gen_bands(
     args...;
-    xsymbol = :ϕ,
+    xsymbol,
+    bounds,
     nsamples = 50,
-    bounds = (0.0, π/2),
     xs = range(bounds..., length=nsamples),
     kwargs...
 )
     gen_bands!(Vector{DataColumn}(xsymbol, xs), args...; xs = xs, xsymbol = xsymbol, kwargs...)
 end
 
-@export function gen_bands!(
+function gen_bands!(
     cols::Vector{DataColumn},
     args...;
     xsymbol,
-    nsamples = 50,
-    bounds = (0.0, π/2),
-    xs = range(bounds..., length=nsamples),
+    xs,
     save = false,
     dirname = "$(now())_gen_bands()",
     kwargs...
@@ -233,6 +236,7 @@ end
 
 @export function gen_on_bands!(
     cols;
+    bounds = energy_bounds(cols),
     save = false,
     dirname = "$(now())_gen_on_bands()",
     kwargs...
@@ -240,8 +244,8 @@ end
     save && mkpath(joinpath("data", dirname))
 
     @showprogress 1 "" for (idx,col) in enumerate(cols)
-        ys = filter(y -> bounds[1] <= y <= bounds[2], col.metadata.sim.eig.values),
-        gen_col!(col; kwargs..., ys = ys, _progress_dt=Inf)
+        ys = filter(y -> bounds[1] <= y <= bounds[2], col.metadata.sim.eig.values)
+        gen_col!(col; bounds=bounds, kwargs..., ys = ys, _progress_dt=Inf)
         save && @save joinpath("data", dirname, "col-$(string(idx, pad=6)).bson") col
     end
 
@@ -267,7 +271,7 @@ end
 @export function gen_col!(
     col::DataColumn;
     ysymbol,
-    bounds = energy_bounds(cols),
+    bounds = energy_bounds(col),
     nsamples = 50,
     ys = range(bounds..., length=nsamples),
     threshold = nothing,
@@ -292,10 +296,26 @@ end
     return col
 end
 
-function calc_data1(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2)
-    G = propagator(sim, E=E, α=α)
+function first_order_perturbation(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ)
+    γL = α*sim.γL
+    ΓL = α*sim.ΓL
+    ΓR = α*sim.ΓR
+
+    G = propagator(sim, E=E, Γ=ΓL+ΓR)
+    X = G*γL*G'
+    t = 2real(dot(X, ΓR))
+    s = map(L -> 4λ*dot(X, ΓR*G*L), sim.L)
+
+    return (E=E, α=α, s=s, t=t)
+end
+
+function calc_data1(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2)
+    G = propagator(sim, E=E)
     eigvals, U = nearest_eigenstates(sim.eig, E, n=n)
-    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
+
+    X = G*sim.γL*G'
+    t = 2real(dot(X, sim.ΓR))
+    s = map(L -> 4λ*dot(X, sim.ΓR*G*L), sim.L)
 
     return (
         E=E, α=α, n=n,
@@ -311,8 +331,8 @@ function calc_data1(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2)
     )
 end
 
-function calc_data2(sim::Simulation; E=sim.μ, α=DEFAULT_α)
-    G = propagator(sim, E=E, α=α)
+function calc_data2(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ)
+    G = propagator(sim, E=E)
     carbon_atoms = collect(filter(x -> x isa Carbon, sim.mol.atoms))
 
     Ls = collect(zip(
@@ -327,7 +347,7 @@ function calc_data2(sim::Simulation; E=sim.μ, α=DEFAULT_α)
     ts = Float64[]
 
     for L in Ls
-        s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, L)
+        s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, L, λ=λ)
         push!(ss, v)
         push!(ts, t)
     end
@@ -348,16 +368,16 @@ end
 
 # Calculate the reduced
 
-function calc_data3(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2, nmin=1)
-    G = propagator(sim, E=E, α=α)
-    Gfull = fullpropagator(sim, E=E, α=α)
+function calc_data3(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2, nmin=1)
+    G = propagator(sim, E=E)
+    Gfull = fullpropagator(sim, E=E, λ=λ)
     eigvals, U = nearest_eigenstates(sim.eig, E, n=n, nmin=nmin)
     Ufull = U ⊗ σ0
 
-    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
+    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L, λ=λ)
 
     return (
-        E=E, α=α, n=n,
+        E=E, α=α, λ=λ, n=n,
 
         s = s,
         t = t,
@@ -373,10 +393,10 @@ function calc_data3(sim::Simulation; E=sim.μ, α=DEFAULT_α, n=2, nmin=1)
 end
 
 function calc_data4(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2)
-    G = propagator(sim, E=E, α=α, λ=λ)
+    G = propagator(sim, E=E)
     eigvals, U, V = nearest_eigenstates(sim.eig, E, n=n)
 
-    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L)
+    s, t = calculate_s_and_t(G, sim.γL, sim.ΓR, sim.L, λ=λ)
 
     return (
         E=E, α=α, λ=λ, n=n,
@@ -395,9 +415,9 @@ function calc_data4(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2
 end
 
 function calc_data5(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2, Γτ=1.0, γL=sim.γL)
-    G = propagator(sim, E=E, α=α, ΓL=I / (Γτ*α*λ))
+    G = propagator(sim, E=E, ΓL=I / (Γτ*α*λ))
     eigvals, U = nearest_eigenstates(sim.eig, E, n=n)
-    s, t = calculate_s_and_t(G, γL ./ (2π*Γτ), sim.ΓR, sim.L)
+    s, t = calculate_s_and_t(G, γL ./ (2π*Γτ), sim.ΓR, sim.L, λ=λ)
 
     return (
         E=E, α=α, n=n,
@@ -413,47 +433,55 @@ function calc_data5(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, n=2
     )
 end
 
-function calc_data6(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, c=0.25, f=0.0)
-    Γ = (sim.ΓR * (1 + c) + sim.ΔΓR * (1 - c)) / 2 + f*sim.ΓL
-    ΔΓ = (sim.ΓR * (1 - c) + sim.ΔΓR * (1 + c)) / 2
+function calc_data6(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ, c=4, cL=1.0)
+    Γ = α/2 * sim.ΓR ⊗ σ0
+    ΔΓ = α/2 * sim.ΓR * (c - 1) / (c + 1) ⊗ σ[:z]
+    γL = sim.γL ⊗ σ0
+    ΓL = α * sim.ΓL ⊗ σ0
 
     Gup = fullpropagator(
         sim,
         E = E,
-        α = α,
         λ = λ,
-        Γ = Γ ⊗ σ0 + ΔΓ ⊗ σ[:z]
+        Γ = Γ + ΔΓ+ cL*ΓL
     )
     Gdown = fullpropagator(
         sim,
         E = E,
-        α = α,
         λ = λ,
-        Γ = Γ ⊗ σ0 - ΔΓ ⊗ σ[:z]
+        Γ = Γ - ΔΓ + cL*ΓL
     )
-
-    γL = sim.γL ⊗ σ0
-    ΓL = sim.ΓL ⊗ σ0
 
     t_up = tr(γL*Gup'ΓL*Gup)
     t_down = tr(γL*Gdown'ΓL*Gdown)
 
     return (
         E=E, α=α, λ=λ,
-
-        spintransmission = t_up - t_down,
-        transmission = t_up + t_down,
+        t_up = t_up,
+        t_down = t_down,
+        spintransmission = (t_up - t_down) / 2,
+        transmission = (t_up + t_down) / 2,
     )
+end
+
+function simple_transport(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ)
+    ΓL = sim.ΓL ⊗ σ0
+    ΓR = sim.ΓR ⊗ σ0
+
+    G = fullpropagator(sim, E=E, λ=λ, Γ=ΓL+ΓR)
+    transmission = tr(ΓL*G'*ΓR*G)
+
+    return (E=E, α=α, λ=λ, transmission=transmission)
 end
 
 @export percentage(x) = 100x
 
-@export function transmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ), default=0.0)
-    return get(x, :transmission, get(x, :t, default) * (α*λ)^2)
+@export function transmission(x::NamedTuple; default=0.0)
+    return real(get(x, :transmission, get(x, :t, default)))
 end
 
-@export function spintransmission(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
-    return get(x, :spintransmission, (λ * (α*λ)^2) * real.(get(x, :s, [0.0, 0.0, 0.0])))
+@export function spintransmission(x::NamedTuple)
+    return real.(get(x, :spintransmission, get(x, :s, [0.0, 0.0, 0.0])))
 end
 spintransmission(i::Int; kwargs...) = (x::NamedTuple) -> spintransmission(x, i; kwargs...)
 spintransmission(x::NamedTuple, i; kwargs...) = spintransmission(x; kwargs...)[i]
@@ -462,8 +490,8 @@ spintransmission(x::NamedTuple, i; kwargs...) = spintransmission(x; kwargs...)[i
 polarization(x::NamedTuple, i; kwargs...) = spintransmission(x, i; kwargs...) / transmission(x; default=1e-16, kwargs...)
 polarization(i::Int; kwargs...) = (x::NamedTuple) -> polarization(x, i; kwargs...)
 
-@export function precession(x::NamedTuple; α=get(x, :α, DEFAULT_α), λ=get(x, :λ, DEFAULT_λ))
-    return λ*imag.(get(x, :s, [0.0, 0.0, 0.0])) * (α*λ)^2 / transmission(x; α=α, λ=λ)
+@export function precession(x::NamedTuple)
+    return imag.(get(x, :s, [0.0, 0.0, 0.0])) / transmission(x; default=1e-16)
 end
 precession(x::NamedTuple, i; kwargs...) = precession(x; kwargs...)[i]
 precession(i::Int; kwargs...) = (x::NamedTuple) -> precession(x, i; kwargs...)

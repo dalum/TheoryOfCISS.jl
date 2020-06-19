@@ -11,10 +11,10 @@ using LinearAlgebra
 using Molecules
 using Molecules: Molecule, Bond,
     Hydrogen, Carbon, Nitrogen, Oxygen,
-    Lead, angularmomentum, hamiltonian, makeaxes, mass, nB, overlap
+    angularmomentum, hamiltonian, makeaxes, mass, nB, overlap
 using ProgressMeter
 using Random
-using SlaterKoster: loaddir
+using SlaterKoster: SlaterKoster, loaddir
 using SparseArrays
 using StaticArrays
 using Statistics
@@ -40,7 +40,7 @@ include("lite.jl")
 include("lite_datagen.jl")
 include("plots_recipes.jl")
 
-# include("../extra/scratch.jl")
+include("../extra/scratch.jl")
 
 # include("basic.jl")
 

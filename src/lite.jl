@@ -31,9 +31,10 @@ struct LiteSimulation <: Simulation
     eig
     μ
     Δ
-    H
     H0
     S0
+    H
+    HSOC
     γL
     ΓL
     ΔΓL
@@ -52,13 +53,17 @@ Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
     xyz_file = nothing,
 
     ρ0 = Diagonal([0.0, 0.0, 1.0, 0.0]),
-    ρL = 1.0I,
-    ρR = 1.0I,
+    ρL = 1.0I(4),
+    ρR = 1.0I(4),
     seed = 47,
     rng = MersenneTwister(seed),
+    coupling_type = :atom,
 
     αL = 1.0,
     αR = 1.0,
+    lead_orbitals = (orbital"2s", orbital"2p_x", orbital"2p_y", orbital"2p_z"),
+
+    λ = DEFAULT_λ,
 
     kwargs...
 )
@@ -71,57 +76,88 @@ Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
     d = (z2 - z1) / 2
     electric_field = (x, y, z) -> iszero(d) ? 0.0 : -V * (z - z0) / d
 
-    H0 = Hermitian(hamiltonian(Float64, GLOBAL_SKT, mol, fixed_distance=fixed_distance, electric_field=electric_field))
-    if correct_overlaps
-        S0 = Hermitian(overlap(Float64, GLOBAL_SKT, mol, fixed_distance=fixed_distance))
-        Ssqrtinv = sqrt(inv(S0))
-        H = Ssqrtinv*H0*Ssqrtinv
-    else
-        S0 = I
-        H = H0
-    end
-    eig = eigen(H, sortby=real)
-    μ, Δ = chemicalpotential(mol, eig.values)
+    H0 = Hermitian(hamiltonian(Float64, SLATERKOSTER_HAMILTONIAN, mol, fixed_distance=fixed_distance, electric_field=electric_field))
+    L0 = map(x -> angularmomentum(x, mol), [:x, :y, :z])
 
     left_atom, right_atom = mol.atoms[m.left_index], mol.atoms[end-m.right_index+1]
 
-    γL = αL .* makecoupling(rng, ρ0, H0, Molecules.indices(mol, left_atom))
-    ΓLup = αL .* makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
-    ΓLdown = αL .* makecoupling(rng, ρL, H0, Molecules.indices(mol, left_atom))
-    ΓRup = αR .* makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
-    ΓRdown = αR .* makecoupling(rng, ρR, H0, Molecules.indices(mol, right_atom))
+    f = Molecules.slaterkoster(
+        CC_ssσ = -2.0,
+        CC_spσ = -1.5,
+        CC_psσ = 1.5,
+        CC_ppσ = 1.5,
+        CC_ppπ = -0.5,
+    )
+
+    γL = αL * makecoupling(Val(coupling_type), rng, ρ0, left_atom, mol, f=f, seed=seed+1, m=-1)
+    ΓLup = αL * makecoupling(Val(coupling_type), rng, ρL, left_atom, mol, f=f, seed=seed+1, m=-1)
+    ΓLdown = αL * makecoupling(Val(coupling_type), rng, ρL, left_atom, mol, f=f, seed=seed+1, m=-1)
+    ΓRup = αR * makecoupling(Val(coupling_type), rng, ρR, right_atom, mol, f=f, seed=seed+2, m=+1)
+    ΓRdown = αR * makecoupling(Val(coupling_type), rng, ρR, right_atom, mol, f=f, seed=seed+2, m=+1)
 
     ΓL, ΔΓL = symmetrize!(ΓLup, ΓLdown)
     ΓR, ΔΓR = symmetrize!(ΓRup, ΓRdown)
 
-    L = map(x -> angularmomentum(x, mol), [:x, :y, :z])
+    if correct_overlaps
+        S0 = Hermitian(overlap(Float64, SLATERKOSTER_OVERLAP, mol, fixed_distance=fixed_distance))
+        Ssqrtinv = sqrt(inv(S0))
+        H = Hermitian(Ssqrtinv*H0*Ssqrtinv)
+        L = map(L -> Ssqrtinv*L*Ssqrtinv, L0)
+        ΓL, ΓR, ΔΓL, ΔΓR = map(Γ -> Hermitian(Ssqrtinv*Γ*Ssqrtinv), (ΓL, ΓR, ΔΓL, ΔΓR))
+    else
+        S0 = I
+        H = H0
+        L = L0
+    end
+    eig = eigen(H, sortby=real)
+    μ, Δ = chemicalpotential(mol, eig.values)
 
-    return LiteSimulation(m, mol, eig, μ, Δ, H, H0, S0, γL, ΓL, ΔΓL, ΓR, ΔΓR, L)
+    HSOC = λ * sum(L ⊗ σ for (L, σ) in zip(L, σ))
+
+    return LiteSimulation(m, mol, eig, μ, Δ, H0, S0, H, HSOC, γL, ΓL, ΔΓL, ΓR, ΔΓR, L)
 end
 
-makecoupling(rng, ρ::UniformScaling, A, indices; kwargs...) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices; kwargs...)
-makecoupling(rng::UniformScaling, ρ::UniformScaling, A, indices; kwargs...) = makecoupling(rng, Matrix(1.0I, length(indices), length(indices)), A, indices; kwargs...)
-
-function makecoupling(rng::UniformScaling, ρ, A, indices; err=10)
-    U = spzeros(Float64, size(ρ, 2), size(A, 1))
-    U[:, indices] = Matrix(rng, size(ρ, 2), length(indices))
+function makecoupling(::Val{:identity}, J::UniformScaling, ρ, atom, mol; err=10, kwargs...)
+    indices = Molecules.indices(mol, atom)
+    N = Molecules.countorbitals(mol)
+    U = spzeros(Float64, size(ρ, 2), N)
+    U[:, indices] = Matrix(J, size(ρ, 2), length(indices))
     B = U'ρ*U
     rmul!(B, rank(B)*inv(tr(B)))
     if !isposdef!(B + 1e-16I)
         err == 0 && error("Invalid coupling!")
-        return makecoupling(rng, ρ, A, indices, err=err-1)
+        return makecoupling(Val(:identity), rng, ρ, atom, mol, err=err-1)
     end
     return B
 end
 
-function makecoupling(rng, ρ, A, indices; err=10)
-    U = spzeros(Float64, size(ρ, 2), size(A, 1))
+function makecoupling(::Val{:atom}, rng::AbstractRNG, args...; seed=nothing, kwargs...)
+    !isnothing(seed) && Random.seed!(rng, seed+1)
+    makecoupling(Val(:atom), randn(rng, 3), args...; kwargs...)
+end
+
+makecoupling(::Val{:atom}, J::Float64, args...; m=1, kwargs...) = makecoupling(Val(:atom), [0.0, 0.0, m*J], args...; kwargs...)
+
+function makecoupling(::Val{:atom}, d, ρ, atom, mol; f=SLATERKOSTER_HAMILTONIAN, kwargs...)
+    lead_atom = Carbon(atom.position + d)
+    lead_bond = Bond(atom, lead_atom)
+    lead = Molecule([lead_atom])
+    coupling = Set([lead_bond])
+    U = hamiltonian(Float64, f, lead, mol, coupling)
+    return U'ρ*U
+end
+
+function makecoupling(::Val{:random}, rng, ρ, atom, mol; seed=nothing, err=10, kwargs...)
+    indices = Molecules.indices(mol, atom)
+    N = Molecules.countorbitals(mol)
+    U = spzeros(Float64, size(ρ, 2), N)
+    !isnothing(seed) && Random.seed!(rng, seed+1)
     U[:, indices] = randn(rng, size(ρ, 2), length(indices))
     B = U'ρ*U
-    rmul!(B, rank(B)*inv(tr(B)))
+    #rmul!(B, rank(B)*inv(tr(B)))
     if !isposdef!(B + 1e-16I)
         err == 0 && error("Invalid coupling!")
-        return makecoupling(rng, ρ, A, indices, err=err-1)
+        return makecoupling(Val(:random), rng, ρ, atom, mol, err=err-1)
     end
     return B
 end
@@ -129,18 +165,21 @@ end
 @export function fullpropagator(
     sim::Simulation;
     E = sim.μ,
-    α = DEFAULT_α,
     λ = DEFAULT_λ,
     Γ = (sim.ΓL + sim.ΓR) ⊗ σ0,
     H = sim.H ⊗ σ0,
-    Λσ = λ * sum(L ⊗ σ for (L, σ) in zip(sim.L, σ)),
+    Λσ = sim.HSOC,
 )
-    return inv(E*I - H + α * λ * im * Γ / 2 - Λσ)
+    return inv(E*I - H - Λσ + im*Γ/2)
 end
 
-@export function propagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ,
-                            ΓL=sim.ΓL, ΓR=sim.ΓR, H=sim.H)
-    return inv(E*I - H + α*λ*im/2*(ΓL + ΓR))
+@export function propagator(
+    sim::Simulation;
+    E = sim.μ,
+    Γ = sim.ΓL + sim.ΓR,
+    H = sim.H,
+)
+    return inv(E*I - H + im*Γ/2)
 end
 
 @export function reduced_propagator(sim::Simulation; E=sim.μ, α=DEFAULT_α, λ=DEFAULT_λ,
@@ -231,10 +270,10 @@ end
     return (a1'a2*p - I / dt)
 end
 
-function calculate_s_and_t(G, γL, ΓR, Ls)
+function calculate_s_and_t(G, γL, ΓR, Ls; λ=DEFAULT_λ)
     X = G*γL*G'
     t = 2real(dot(X, ΓR))
-    s = map(L -> 4dot(X, ΓR*G*L), Ls)
+    s = map(L -> 4λ*dot(X, ΓR*G*L), Ls)
     return s, t
 end
 
@@ -269,7 +308,7 @@ end
     push!(mol, Bond(B, C))
     push!(mol, Bond(C, D))
     push!(mol, Bond(D, A))
-    H = hamiltonian(Float64, GLOBAL_SKT, mol)
+    H = hamiltonian(Float64, SLATERKOSTER_HAMILTONIAN, mol)
     println("H-H")
     println("E_s = $(H[9,9])")
     println("V_ssσ = $(H[9,10])")

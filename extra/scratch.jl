@@ -216,7 +216,7 @@ end
 
 ##################################################
 
-@export function scr_f_magnet(sim; E=sim.μ, λ=DEFAULT_λ, m=0.5, n=1, α=0.0, ϕ=0)
+@export function scr_magnet(sim; E=sim.μ, λ=DEFAULT_λ, m=0.5, n=1, α=0.0, ϕ=0)
     ρ0 = let
         v0 = eigenstate(sim, E = E, ϕ=ϕ)
         0.5 * v0*v0'
@@ -252,38 +252,90 @@ end
     return (Ts = Ts,)
 end
 
-@export function scr_f_magnet_lorentz(sim; E0=sim.μ, λ=DEFAULT_λ, m=0.5, β=1, kwargs...)
-    γ = sim.γL
-    Γ = sim.ΓL
-
-    Σ = - im * (sim.ΓR * (1 + m) + sim.ΔΓR * (1 - m)) / 4
-    ΔΣ = - im * (sim.ΓR * (1 - m) + sim.ΔΓR * (1 + m)) / 4
-
-    J = ((sim.H + Σ) ⊗ σ0 + ΔΣ ⊗ σ[:z] + sum(λ * map(⊗, sim.L, σ)),
-         (sim.H + Σ) ⊗ σ0 - ΔΣ ⊗ σ[:z] + sum(λ * map(⊗, sim.L, σ)))
-    j, U = let
-        eig = eigen.(J)
-        map(x -> x.values, eig), map(x -> x.vectors, eig)
+@export function time_dependent_escape(
+    sim;
+    E = sim.μ,
+    λ = DEFAULT_λ,
+    m = 1.0,
+    α = DEFAULT_α,
+    ϕ = 0,
+    hbar = HBAR
+)
+    ρ0 = let
+        v0 = eigenstate(sim, E = E, ϕ=ϕ)
+        v0*v0'
     end
 
-    γ = map(U -> inv(U) * (γ ⊗ σ0) * inv(adjoint(U)), U)
-    Γ = map(U -> adjoint(U) * (Γ ⊗ σ0) * U, U)
+    Γ = α*sim.ΓR
+    Σ = - im * α*sim.ΓR / 2
 
-    N = size(J[1], 1)
+    J = (sim.H + Σ) ⊗ σ0 + sum(λ * map(⊗, sim.L, σ))
+    j, U = eigen(J)
+    N = length(j)
 
-    Ts = map(j, γ, Γ) do j, γ, Γ
-        T = sum(CartesianIndices((N, N))) do idx
-            k, l = idx[1], idx[2]
-            x_kl = im*(j[k] - j[l]')
-            real(x_kl) < 0 && error("negative `real(x_kl)` found: $(real(x_kl))")
-            return γ[k,l] * Γ[l,k] * (
-                β/π / ((j[l]' - E0)^2 + β^2) / x_kl +
-                1 / 2π / (E0 - j[k] + im*β) / 1 / (E0 - j[l]' + im*β)
-            )
-        end
-        real(T) < 0 && error("negative `real(T)` found: $(real(T))")
-        T
+    ρ = inv(U) * (ρ0 ⊗ ((σ0 + m * σ[:z]) / 2)) * inv(adjoint(U))
+    Γ = adjoint(U) * (Γ ⊗ σ0) * U
+
+    ξs = map(CartesianIndices((N, N))) do idx
+        k, l = idx[1], idx[2]
+        x_kl = im*(j[k] - j[l]')
+        real(x_kl) < 0 && error("negative `real(x_kl)` found: $(real(x_kl))")
+        return x_kl
+    end
+    Ts = map(CartesianIndices((N, N))) do idx
+        k, l = idx[1], idx[2]
+        x_kl = im*(j[k] - j[l]')
+        real(x_kl) < 0 && error("negative `real(x_kl)` found: $(real(x_kl))")
+        return ρ[k,l] * Γ[l,k] / x_kl
+    end
+    fs = map(CartesianIndices((N, N))) do idx
+        k, l = idx[1], idx[2]
+        x_kl = im*(j[k] - j[l]')
+        real(x_kl) < 0 && error("negative `real(x_kl)` found: $(real(x_kl))")
+        return f(t) = 1 - exp(-x_kl * t / hbar)
     end
 
-    return (Ts = Ts,)
+    return (ξs = ξs, Ts = Ts, fs = fs)
+end
+
+@export function scr_f(
+    δx = 0.0,
+    δy = 0.1;
+    t0 = 0,
+    t1 = 1,
+    nsamples = 500,
+    ts = range(t0, t1, length=nsamples),
+    seed = 42,
+    α = 1,
+)
+    x0, y0, y1 = let
+        xsymbol = :δz
+        x0 = 0.8
+        y0 = -4.2
+        mol = Helicene(N=7)
+
+        x0, y0, y1 = TheoryOfCISS.find_crossing(
+            x0, y0, mol,
+            xsymbol = xsymbol,
+            threshold=1e-12,
+            attenuation=1e-2,
+            rounding = :both
+        )
+    end
+
+    x = x0
+    y = (y0 + y1) / 2
+
+    cols_up = gen_bands(Helicene(N=7), xsymbol = :δz, bounds=(x + δx, x + δx), nsamples=1, seed=seed);
+    cols_down = gen_bands(Helicene(N=7), xsymbol = :δz, bounds=(x + δx, x + δx), nsamples=1, seed=seed);
+
+    gen_on_bands!(cols_up, ysymbol=:E, f = time_dependent_escape, m=1.0, bounds=(y - δy, y + δy), α=α);
+    gen_on_bands!(cols_down, ysymbol=:E, f = time_dependent_escape, m=-1.0, bounds=(y - δy, y + δy), α=α);
+
+    _f(t, x) = sum(map((T, f) -> T * f(t), x.Ts, x.fs))
+    f_x(t, i) = real(_f(t, cols_up[1].data[i])), real(_f(t, cols_down[1].data[i]))
+    f_xs = map(i -> mapreduce(t -> [f_x(t, i)...]', vcat, ts), 1:2)
+    pol(a, b) = 100 * !iszero(a - b) * ((a - b) / (a + b))
+    dat = map(x -> map(i -> pol(i...), eachrow(x)), f_xs)
+    return ts, f_xs, dat
 end
