@@ -57,7 +57,7 @@ Base.show(io::IO, sim::LiteSimulation) = Base.print(io, "LiteSimulation(...)")
     ρR = 1.0I(4),
     seed = 47,
     rng = MersenneTwister(seed),
-    coupling_type = :atom,
+    coupling_type = :random,
 
     αL = 1.0,
     αR = 1.0,
